@@ -1,0 +1,27 @@
+{
+  "name": "forkwatch",
+  "version": "1.0.0",
+  "description": "fork monitoring service for substrate chains",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --experimental-vm-modules ./node_modules/.bin/jest --forceExit",
+    "start:local": "CHAINS='[{\"name\":\"hydration\",\"consensus\":\"aura\",\"nodes\":[{\"name\":\"collator-1\",\"url\":\"wss://localhost:9988\"},{\"name\":\"collator-2\",\"url\":\"wss://localhost:9989\"}]}]' npm run start"
+  },
+  "type": "module",
+  "jest": {
+    "transform": {}
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "dependencies": {
+    "@polkadot/api": "~16.1.1",
+    "@polkadot/util": "~13.5.3",
+    "dotenv": "^16.0.1",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "prom-client": "^15.1.3"
+  }
+}

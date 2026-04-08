@@ -25,9 +25,24 @@ export class ChainContext {
 		this.connections = [];
 	}
 
+	/**
+	 * resolve author name: knownAuthors config > on-chain identity cache > null.
+	 * use resolveAuthorIdentity for async identity fetch.
+	 */
 	resolveAuthorName(address) {
 		if (!address) return null;
-		return this.knownAuthors[address] || null;
+		if (this.knownAuthors[address]) return this.knownAuthors[address];
+		return this.authorExtractor.identityCache.get(address) || null;
+	}
+
+	/**
+	 * fetch and cache on-chain identity for an address.
+	 * called in the background after block processing.
+	 */
+	async resolveAuthorIdentity(api, address) {
+		if (!address) return null;
+		if (this.knownAuthors[address]) return this.knownAuthors[address];
+		return this.authorExtractor.resolveIdentity(api, address);
 	}
 
 	async connect() {
@@ -100,6 +115,11 @@ export class ChainContext {
 				author = await this.authorExtractor.extractAuthor(conn.api, hash);
 			} catch (e) {
 				// non-critical, continue without author
+			}
+
+			// resolve identity (cached after first fetch)
+			if (author && !this.authorExtractor.identityCache.has(author)) {
+				this.resolveAuthorIdentity(conn.api, author).catch(() => {});
 			}
 
 			const authorName = this.resolveAuthorName(author);

@@ -5,7 +5,10 @@
  * @property {string} parentHash
  * @property {string|null} author
  * @property {string|null} authorName
+ * @property {string|null} stateRoot
+ * @property {string|null} extrinsicsRoot
  * @property {string|null} relayParent
+ * @property {number|null} relayNumber
  * @property {number} importedAt
  * @property {Set<string>} seenByNodes
  */
@@ -25,7 +28,7 @@ export class BlockTree {
 	 * add a block to the tree. returns the record and whether it's new.
 	 * @returns {{ record: BlockRecord, isNew: boolean }}
 	 */
-	addBlock(hash, number, parentHash, author, authorName, relayParent, nodeName) {
+	addBlock(hash, number, parentHash, author, authorName, relayParent, nodeName, extra = {}) {
 		const existing = this.blocksByHash.get(hash);
 		if (existing) {
 			existing.seenByNodes.add(nodeName);
@@ -38,7 +41,10 @@ export class BlockTree {
 			parentHash,
 			author,
 			authorName,
+			stateRoot: extra.stateRoot || null,
+			extrinsicsRoot: extra.extrinsicsRoot || null,
 			relayParent,
+			relayNumber: extra.relayNumber || null,
 			importedAt: Date.now(),
 			seenByNodes: new Set([nodeName]),
 		};

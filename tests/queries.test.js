@@ -33,9 +33,12 @@ describe('db/queries', () => {
 				blockNumber: 100,
 				blockHash: '0xaa',
 				parentHash: '0x99',
+				stateRoot: '0xstate',
+				extrinsicsRoot: '0xextr',
 				author: 'alice',
 				authorName: 'alice-name',
 				relayParent: '0xrelay',
+				relayNumber: 5000,
 				seenBy: ['node-1'],
 			});
 
@@ -44,7 +47,8 @@ describe('db/queries', () => {
 			expect(sql).toContain('INSERT INTO fork_blocks');
 			expect(sql).toContain('ON CONFLICT (block_hash)');
 			expect(params).toEqual([
-				'hydration', 100, '0xaa', '0x99', 'alice', 'alice-name', '0xrelay', ['node-1']
+				'hydration', 100, '0xaa', '0x99', '0xstate', '0xextr',
+				'alice', 'alice-name', '0xrelay', 5000, ['node-1']
 			]);
 		});
 
@@ -54,17 +58,23 @@ describe('db/queries', () => {
 				blockNumber: 200,
 				blockHash: '0xbb',
 				parentHash: '0xaa',
+				stateRoot: null,
+				extrinsicsRoot: null,
 				author: null,
 				authorName: null,
 				relayParent: null,
+				relayNumber: null,
 				seenBy: ['node-1', 'node-2'],
 			});
 
 			const [, params] = mockQuery.mock.calls[0];
-			expect(params[4]).toBeNull();
-			expect(params[5]).toBeNull();
-			expect(params[6]).toBeNull();
-			expect(params[7]).toEqual(['node-1', 'node-2']);
+			expect(params[4]).toBeNull(); // stateRoot
+			expect(params[5]).toBeNull(); // extrinsicsRoot
+			expect(params[6]).toBeNull(); // author
+			expect(params[7]).toBeNull(); // authorName
+			expect(params[8]).toBeNull(); // relayParent
+			expect(params[9]).toBeNull(); // relayNumber
+			expect(params[10]).toEqual(['node-1', 'node-2']);
 		});
 	});
 

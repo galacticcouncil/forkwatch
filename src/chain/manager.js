@@ -110,6 +110,8 @@ export class ChainContext {
 			const hash = header.hash.toHex();
 			const number = header.number.toNumber();
 			const parentHash = header.parentHash.toHex();
+			const stateRoot = header.stateRoot.toHex();
+			const extrinsicsRoot = header.extrinsicsRoot.toHex();
 
 			let author = null;
 			try {
@@ -126,7 +128,8 @@ export class ChainContext {
 			const authorName = this.resolveAuthorName(author);
 
 			await this.forkDetector.onNewBlock(
-				hash, number, parentHash, author, authorName, null, nodeName
+				hash, number, parentHash, author, authorName, null, nodeName,
+				{ stateRoot, extrinsicsRoot }
 			);
 		});
 

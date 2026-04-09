@@ -1,12 +1,18 @@
 import { db, dbEnabled } from '../db/index.js';
 
 /**
- * determines whether a parachain fork was caused by a relay chain fork
- * or by collator contention.
+ * determines the cause of parachain forks by analyzing:
+ * - whether the same or different authors produced competing blocks
+ * - whether they reference the same or different relay chain blocks
+ * - whether they share the same parachain parent
  *
- * when a parachain fork is detected, we fetch the relay parent from each
- * competing block's validation data. if they reference different relay parents,
- * the fork was caused by the relay chain forking.
+ * cause categories:
+ * - relay_fork: relay chain forked, different relay block hashes at same height
+ * - relay_fork_same_author: relay fork, but same collator produced on both branches
+ * - collator_contention: different collators competing (same or different relay context)
+ * - double_production: same collator produced twice on same relay context, same parent
+ * - double_production_reorg: same collator, same relay context, different para parent
+ * - double_production_timing: same collator built at different relay heights
  */
 export class ForkCausation {
 	constructor(parachainCtx, relayChainCtx, m) {
@@ -24,14 +30,11 @@ export class ForkCausation {
 		};
 	}
 
-	/**
-	 * analyze the cause of a parachain fork by comparing relay parents.
-	 */
 	async analyzeForkCause(height, blocksAtHeight) {
 		const blocks = Array.from(blocksAtHeight.values());
 		if (blocks.length < 2) return;
 
-		// try to get relay parent for each competing block
+		// fetch relay parent for each competing block
 		const relayParents = await Promise.all(
 			blocks.map(block => this.getRelayParent(block))
 		);
@@ -42,77 +45,108 @@ export class ForkCausation {
 			return;
 		}
 
-		// compare relay parents by NUMBER first, then by hash at the same number.
-		// - same relay number, same hash → collator_contention (same relay context)
-		// - same relay number, different hash → relay_fork (relay chain forked at that height)
-		// - different relay numbers → collator_contention (collators built at different times, normal)
+		// analyze the three dimensions
+		const authors = blocks.map(b => b.authorName || b.author || 'unknown');
+		const parentHashes = blocks.map(b => b.parentHash);
 		const relayNumbers = validRelayParents.map(rp => rp.number);
 		const relayHashes = validRelayParents.map(rp => rp.hash);
-		const uniqueNumbers = new Set(relayNumbers.filter(n => n !== null));
-		const uniqueHashes = new Set(relayHashes.filter(h => h !== null));
+
+		const uniqueAuthors = new Set(authors);
+		const uniqueParents = new Set(parentHashes);
+		const uniqueRelayNumbers = new Set(relayNumbers.filter(n => n !== null));
+		const uniqueRelayHashes = new Set(relayHashes.filter(h => h !== null));
+
+		const sameAuthor = uniqueAuthors.size === 1;
+		const sameParent = uniqueParents.size === 1;
+		const sameRelayNumber = uniqueRelayNumbers.size <= 1;
+		const sameRelayHash = uniqueRelayHashes.size <= 1;
+
+		// determine cause
 		let cause;
 		let relayHeight = null;
 
-		if (uniqueNumbers.size === 1 && uniqueHashes.size > 1) {
-			// same relay height, different block hashes → actual relay chain fork
-			cause = 'relay_fork';
+		if (sameRelayNumber && !sameRelayHash) {
+			// relay chain forked at this height
 			relayHeight = relayNumbers.find(n => n !== null);
-			console.log(
-				`[${this.parachain.name}] fork at height ${height} caused by relay chain fork` +
-				` at relay height ${relayHeight} (${uniqueHashes.size} competing relay blocks)`
-			);
-			this.m.parachain_forks_relay_caused_total.inc({
-				chain: this.parachain.name,
-				relay_chain: this.relayChain.name,
-			});
-		} else if (uniqueNumbers.size > 1) {
-			// different relay heights → collators built at different times, not a relay fork
-			cause = 'collator_contention';
-			const numbers = Array.from(uniqueNumbers).sort((a, b) => a - b);
-			console.log(
-				`[${this.parachain.name}] fork at height ${height} caused by collator contention ` +
-				`(different relay heights: ${numbers.join(' vs ')})`
-			);
+			cause = sameAuthor ? 'relay_fork_same_author' : 'relay_fork';
+		} else if (sameAuthor) {
+			// same collator produced multiple blocks
+			if (!sameRelayNumber) {
+				cause = 'double_production_timing';
+			} else if (!sameParent) {
+				cause = 'double_production_reorg';
+			} else {
+				cause = 'double_production';
+			}
 		} else {
-			// same relay number, same hash → both collators produced for same relay context
 			cause = 'collator_contention';
-			console.log(
-				`[${this.parachain.name}] fork at height ${height} caused by collator contention ` +
-				`(same relay parent #${relayNumbers[0]})`
-			);
 		}
 
+		const details = {
+			authors: authors,
+			relay_numbers: relayNumbers,
+			relay_hashes: relayHashes.map(h => h ? h.slice(0, 18) + '...' : null),
+			parent_hashes: parentHashes.map(h => h.slice(0, 18) + '...'),
+			same_author: sameAuthor,
+			same_relay_number: sameRelayNumber,
+			same_relay_hash: sameRelayHash,
+			same_parent: sameParent,
+		};
+
+		const relayInfo = sameRelayNumber
+			? `relay #${relayNumbers[0]}${sameRelayHash ? ' same hash' : ' DIFFERENT hashes'}`
+			: `relay ${Array.from(uniqueRelayNumbers).sort((a, b) => a - b).join(' vs ')}`;
+
+		console.log(
+			`[${this.parachain.name}] fork at height ${height}: ${cause} ` +
+			`(${sameAuthor ? 'same author' : authors.join(' vs ')}, ` +
+			`${relayInfo}, ` +
+			`${sameParent ? 'same parent' : 'different parents'})`
+		);
+
+		// update metrics
 		this.m.parachain_fork_cause_total.inc({
 			chain: this.parachain.name,
 			cause,
 		});
 
-		// update the database if enabled
+		if (cause === 'relay_fork' || cause === 'relay_fork_same_author') {
+			this.m.parachain_forks_relay_caused_total.inc({
+				chain: this.parachain.name,
+				relay_chain: this.relayChain.name,
+			});
+		}
+
+		// update database
 		if (dbEnabled()) {
 			await db().query(
-				`UPDATE fork_events SET cause = $1, relay_height = $2
+				`UPDATE fork_events SET cause = $1, relay_height = $2,
+				 same_author = $5, same_relay = $6, same_parent = $7, details = $8
 				 WHERE id = (
 				   SELECT id FROM fork_events
 				   WHERE chain = $3 AND block_number = $4 AND cause IS NULL
 				   ORDER BY detected_at DESC LIMIT 1
 				 )`,
-				[cause, relayHeight, this.parachain.name, height]
+				[cause, relayHeight, this.parachain.name, height,
+				 sameAuthor, sameRelayNumber && sameRelayHash, sameParent,
+				 JSON.stringify(details)]
 			).catch(err => console.error(`failed to update fork cause: ${err.message}`));
 
 			for (let i = 0; i < blocks.length; i++) {
 				if (relayParents[i]) {
 					await db().query(
-						`UPDATE fork_blocks SET relay_parent = $1 WHERE block_hash = $2`,
-						[relayParents[i].hash, blocks[i].hash]
+						`UPDATE fork_blocks SET relay_parent = $1, relay_number = $2 WHERE block_hash = $3`,
+						[relayParents[i].hash, relayParents[i].number, blocks[i].hash]
 					).catch(() => {});
 				}
 			}
 		}
 
-		// update in-memory block records with relay parent
+		// update in-memory block records
 		for (let i = 0; i < blocks.length; i++) {
 			if (relayParents[i]) {
 				blocks[i].relayParent = relayParents[i].hash;
+				blocks[i].relayNumber = relayParents[i].number;
 			}
 		}
 	}
@@ -120,11 +154,8 @@ export class ForkCausation {
 	/**
 	 * get the relay parent hash and number for a parachain block.
 	 * queries parachainSystem.validationData storage at the block hash.
-	 *
-	 * @returns {{ hash: string, number: number }|null}
 	 */
 	async getRelayParent(block) {
-		// find a connected api for the parachain
 		const conn = this.parachain.connections.find(c => c.connected);
 		if (!conn) return null;
 
@@ -138,18 +169,12 @@ export class ForkCausation {
 				};
 			}
 
-			// fallback: try reading the relay parent number directly
 			const relayNumber = await conn.api.query.parachainSystem.lastRelayChainBlockNumber.at(block.hash);
 			if (relayNumber) {
-				return {
-					hash: null,
-					number: relayNumber.toNumber(),
-				};
+				return { hash: null, number: relayNumber.toNumber() };
 			}
 		} catch (e) {
-			// validationData may not be available for non-finalized blocks on some nodes
 			try {
-				// alternative: decode from the set_validation_data inherent in the block body
 				return await this.getRelayParentFromInherent(conn.api, block.hash);
 			} catch (e2) {
 				return null;
@@ -159,14 +184,10 @@ export class ForkCausation {
 		return null;
 	}
 
-	/**
-	 * fallback: extract relay parent from the set_validation_data inherent extrinsic.
-	 */
 	async getRelayParentFromInherent(api, blockHash) {
 		const block = await api.rpc.chain.getBlock(blockHash);
 		const extrinsics = block.block.extrinsics;
 
-		// set_validation_data is typically the first inherent
 		for (const ext of extrinsics) {
 			if (
 				ext.method.section === 'parachainSystem' &&
@@ -179,10 +200,7 @@ export class ForkCausation {
 					|| args.relayParentStorageRoot?.toHex?.();
 
 				if (relayParentNumber || relayParentHash) {
-					return {
-						hash: relayParentHash || null,
-						number: relayParentNumber || null,
-					};
+					return { hash: relayParentHash || null, number: relayParentNumber || null };
 				}
 			}
 		}

@@ -14,9 +14,9 @@ export class ForkDetector {
 	 * detects forks and records metrics + db entries.
 	 * @returns {{ record: import('./block-tree.js').BlockRecord, forked: boolean }}
 	 */
-	async onNewBlock(hash, number, parentHash, author, authorName, relayParent, nodeName) {
+	async onNewBlock(hash, number, parentHash, author, authorName, relayParent, nodeName, extra = {}) {
 		const { record, isNew } = this.blockTree.addBlock(
-			hash, number, parentHash, author, authorName, relayParent, nodeName
+			hash, number, parentHash, author, authorName, relayParent, nodeName, extra
 		);
 
 		if (!isNew) return { record, forked: false };
@@ -74,9 +74,12 @@ export class ForkDetector {
 				blockNumber: block.number,
 				blockHash: block.hash,
 				parentHash: block.parentHash,
+				stateRoot: block.stateRoot,
+				extrinsicsRoot: block.extrinsicsRoot,
 				author: block.author,
 				authorName: block.authorName,
 				relayParent: block.relayParent,
+				relayNumber: block.relayNumber,
 				seenBy: Array.from(block.seenByNodes),
 			}).catch(err => console.error(`failed to insert fork block: ${err.message}`));
 		}

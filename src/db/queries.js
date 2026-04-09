@@ -4,13 +4,16 @@ const noop = { rows: [], rowCount: 0 };
 
 export async function insertForkBlock(block) {
 	if (!dbEnabled()) return noop;
-	const { chain, blockNumber, blockHash, parentHash, author, authorName, relayParent, seenBy } = block;
+	const { chain, blockNumber, blockHash, parentHash, stateRoot, extrinsicsRoot,
+		author, authorName, relayParent, relayNumber, seenBy } = block;
 	return db().query(
-		`INSERT INTO fork_blocks (chain, block_number, block_hash, parent_hash, author, author_name, relay_parent, seen_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 ON CONFLICT (block_hash) DO UPDATE SET seen_by = array_cat(fork_blocks.seen_by, $8)
+		`INSERT INTO fork_blocks (chain, block_number, block_hash, parent_hash, state_root, extrinsics_root,
+		 author, author_name, relay_parent, relay_number, seen_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (block_hash) DO UPDATE SET seen_by = array_cat(fork_blocks.seen_by, $11)
 		 RETURNING id`,
-		[chain, blockNumber, blockHash, parentHash, author, authorName, relayParent, seenBy]
+		[chain, blockNumber, blockHash, parentHash, stateRoot, extrinsicsRoot,
+		 author, authorName, relayParent, relayNumber, seenBy]
 	);
 }
 

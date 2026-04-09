@@ -116,12 +116,16 @@ export class ForkDetector {
 	}
 
 	/**
-	 * called when a height gets finalized -- resolves the fork if one existed
+	 * called when a height gets finalized.
+	 * resolves all recorded forks at or below this height,
+	 * since finalization can skip heights.
 	 */
-	onHeightFinalized(height) {
-		if (this.recordedForks.get(height)) {
-			this.m.active_fork_heights.dec({ chain: this.chainName });
-			this.recordedForks.delete(height);
+	onHeightFinalized(finalizedHeight) {
+		for (const [height] of this.recordedForks) {
+			if (height <= finalizedHeight) {
+				this.m.active_fork_heights.dec({ chain: this.chainName });
+				this.recordedForks.delete(height);
+			}
 		}
 	}
 

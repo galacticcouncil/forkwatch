@@ -106,6 +106,7 @@ export class ChainContext {
 		// subscribe to all heads (fork detection)
 		conn.api.rpc.chain.subscribeAllHeads(async (header) => {
 			resetWatchdog();
+			this.m.node_connected.set({ chain: this.name, node: nodeName }, 1);
 			const hash = header.hash.toHex();
 			const number = header.number.toNumber();
 			const parentHash = header.parentHash.toHex();
@@ -131,11 +132,15 @@ export class ChainContext {
 
 		// subscribe to best head (finality lag)
 		conn.api.rpc.chain.subscribeNewHeads((header) => {
+			resetWatchdog();
+			this.m.node_connected.set({ chain: this.name, node: nodeName }, 1);
 			this.finalityTracker.onBestHead(nodeName, header.number.toNumber());
 		});
 
 		// subscribe to finalized head (pruning + resolution)
 		conn.api.rpc.chain.subscribeFinalizedHeads(async (header) => {
+			resetWatchdog();
+			this.m.node_connected.set({ chain: this.name, node: nodeName }, 1);
 			const finalizedNumber = header.number.toNumber();
 			const finalizedHash = header.hash.toHex();
 

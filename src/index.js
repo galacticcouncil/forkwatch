@@ -3,6 +3,7 @@ import { metrics } from './metrics.js';
 import { initDb, closeDb } from './db/index.js';
 import { ChainManager } from './chain/manager.js';
 import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData } from './db/queries.js';
+import { dbEnabled } from './db/index.js';
 import { chains, retentionDays, forkEventRetentionDays } from './config.js';
 
 const m = metrics.register('forkwatch', {
@@ -75,7 +76,11 @@ function registerApiEndpoints() {
 	endpoints.registerEndpoint('status', {
 		'/': {
 			GET: (req, res) => {
-				res.json(chainManager.getStatus());
+				res.json({
+					database: dbEnabled(),
+					uptime: process.uptime(),
+					...chainManager.getStatus(),
+				});
 			}
 		}
 	});

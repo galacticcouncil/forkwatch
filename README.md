@@ -5,9 +5,9 @@ fork monitoring service for substrate-based chains. tracks forks in real-time ac
 ## architecture
 
 ```
-                          ┌─────────────────────────────────────────────┐
-                          │              forkwatch                      │
-                          │                                             │
+                          ┌────────────────────────────────────────────┐
+                          │              forkwatch                     │
+                          │                                            │
  ┌──────────┐  wss://     │  ┌────────────┐    ┌──────────────────┐    │
  │ polkadot ├────────────►│  │            │    │   fork detector  │    │
  │  (babe)  │  allHeads   │  │            │    │                  │    │
@@ -27,7 +27,7 @@ fork monitoring service for substrate-based chains. tracks forks in real-time ac
  ┌──────────┐  wss://     │  │            │    │  contention      │    │
  │ moonbeam ├────────────►│  │            │    └──────────────────┘    │
  │  (aura)  │             │  └────────────┘                            │
- └──────────┘             │                                             │
+ └──────────┘             │                                            │
                           │  ┌────────────┐    ┌──────────────────┐    │
                           │  │ prometheus │    │    identity      │    │
                           │  │  metrics   │◄───┤    resolver      │    │
@@ -35,9 +35,9 @@ fork monitoring service for substrate-based chains. tracks forks in real-time ac
                           │  └─────┬──────┘    │  on-chain names  │    │
                           │        │           │  via IdentityOf  │    │
                           └────────┼───────────┴──────────────────┘    │
-                                   │                                    │
+                                   │                                   │
                           ┌────────┼────────────────────────────┐      │
-                          │        │           optional          │      │
+                          │        │           optional         │      │
                           │  ┌─────▼──────┐                     │      │
                           │  │  grafana   │    ┌──────────────┐ │      │
                           │  │            ├───►│  postgresql  │◄┼──────┘
@@ -154,6 +154,41 @@ docker stack deploy -c docker-compose.yml forkwatch
 ```
 
 image: `galacticcouncil/forkwatch:latest`
+
+the service is exposed via traefik at `https://forkwatch.play.hydration.cloud`. endpoints:
+- `https://forkwatch.play.hydration.cloud/metrics` — prometheus scrape
+- `https://forkwatch.play.hydration.cloud/api/status` — service status
+- `https://forkwatch.play.hydration.cloud/api/forks` — recent fork events
+
+### prometheus configuration
+
+add the following scrape config to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'forkwatch'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['forkwatch.play.hydration.cloud']
+    scheme: https
+```
+
+or if prometheus runs inside the same swarm network, scrape the service directly without tls:
+
+```yaml
+scrape_configs:
+  - job_name: 'forkwatch'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['app:3001']
+    # use the swarm service name and internal port
+```
+
+### grafana
+
+add two data sources:
+1. **prometheus** — query `forkwatch_*` metrics for real-time dashboards
+2. **postgresql** — connect to `forkwatch-db:5432` (db: `forkwatch`, user: `forkwatch`) for detailed fork event queries
 
 ## resilience
 

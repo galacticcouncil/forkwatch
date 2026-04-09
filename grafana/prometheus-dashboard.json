@@ -1,0 +1,317 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "fork rate",
+      "description": "forks detected per chain over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 30, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_fork_events_total[$__rate_interval])",
+          "legendFormat": "{{chain}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "active unresolved forks",
+      "description": "forked heights not yet finalized",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 15 },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "forkwatch_active_fork_heights",
+          "legendFormat": "{{chain}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "finality lag",
+      "description": "blocks between best and finalized head per node",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10 },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          },
+          "color": { "mode": "continuous-GrYlRd" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "forkwatch_finality_lag_blocks",
+          "legendFormat": "{{chain}}/{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "fork depth distribution",
+      "description": "how deep forks go before resolution",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "short" },
+        "color": { "scheme": "Oranges" }
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_fork_depth_bucket{chain=\"$chain\"}[$__rate_interval])",
+          "legendFormat": "{{le}}",
+          "format": "heatmap",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "parachain fork causes",
+      "description": "relay_fork vs collator_contention breakdown",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_parachain_fork_cause_total{chain=\"$chain\"}[$__range])",
+          "legendFormat": "{{cause}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "fork cause over time",
+      "description": "relay_fork vs collator_contention rate per chain",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 40, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*relay_fork.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*collator_contention.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_parachain_fork_cause_total[$__rate_interval])",
+          "legendFormat": "{{chain}} {{cause}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "top fork authors",
+      "description": "authors with most forked blocks",
+      "type": "bargauge",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "expr": "topk(15, increase(forkwatch_author_fork_blocks_total{chain=\"$chain\"}[$__range]))",
+          "legendFormat": "{{author}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "author fork rate",
+      "description": "fork_blocks / total_blocks per author (higher = more forked)",
+      "type": "bargauge",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 0.8 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "topk(15, increase(forkwatch_author_fork_blocks_total{chain=\"$chain\"}[$__range]) / increase(forkwatch_author_blocks_total{chain=\"$chain\"}[$__range]))",
+          "legendFormat": "{{author}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "node connections",
+      "description": "websocket connection status per node",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "forkwatch_node_connected",
+          "legendFormat": "{{chain}}/{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "blocks imported",
+      "description": "total blocks imported per node (via subscribeAllHeads)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10 },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(forkwatch_blocks_imported_total{chain=\"$chain\"}[$__rate_interval])",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "block heights",
+      "description": "best and finalized block heights",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "forkwatch_best_block_height{chain=\"$chain\"}",
+          "legendFormat": "best {{node}}",
+          "refId": "A"
+        },
+        {
+          "expr": "forkwatch_finalized_block_height{chain=\"$chain\"}",
+          "legendFormat": "finalized {{node}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "relay-caused parachain forks",
+      "description": "parachain forks attributed to relay chain forks",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 40 },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_parachain_forks_relay_caused_total[$__rate_interval])",
+          "legendFormat": "{{chain}} (via {{relay_chain}})",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "chain",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(forkwatch_fork_events_total, chain)",
+        "refresh": 2,
+        "current": { "text": "hydration", "value": "hydration" }
+      },
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["forkwatch", "substrate", "forks"],
+  "title": "forkwatch - real-time metrics",
+  "uid": "forkwatch-prometheus"
+}

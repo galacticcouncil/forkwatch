@@ -1,0 +1,218 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "recent fork events",
+      "description": "latest fork events with cause, authors, and resolution status",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "cause" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "relay_fork": { "color": "red", "text": "relay fork" }, "collator_contention": { "color": "orange", "text": "collator contention" } } }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "resolved" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "true": { "color": "green", "text": "yes" }, "false": { "color": "yellow", "text": "pending" } } }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT chain, block_number, competing_count, array_to_string(authors, ' vs ') as authors, cause, depth, resolved, resolved_hash, detected_at, resolved_at FROM fork_events WHERE ($__timeFilter(detected_at)) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY detected_at DESC LIMIT 100",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "fork events per day",
+      "description": "daily fork count by chain from database",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 40, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT date_trunc('hour', detected_at) as time, chain, count(*) as forks FROM fork_events WHERE $__timeFilter(detected_at) GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "fork cause breakdown per day",
+      "description": "relay_fork vs collator_contention over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 40, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*relay_fork.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*collator_contention.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT date_trunc('hour', detected_at) as time, chain || ' ' || coalesce(cause, 'unknown') as metric, count(*) as value FROM fork_events WHERE $__timeFilter(detected_at) AND ('$chain' = 'all' OR chain = '$chain') GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "top forking authors (period)",
+      "description": "authors with most forked blocks in selected time range",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "targets": [
+        {
+          "rawSql": "SELECT chain, coalesce(author_name, author, 'unknown') as author, count(*) as fork_blocks FROM fork_blocks WHERE $__timeFilter(imported_at) AND ('$chain' = 'all' OR chain = '$chain') GROUP BY chain, author, author_name ORDER BY fork_blocks DESC LIMIT 30",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "fork depth distribution",
+      "description": "histogram of fork depths from database",
+      "type": "barchart",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT CASE WHEN depth = 1 THEN '1' WHEN depth = 2 THEN '2' WHEN depth = 3 THEN '3' WHEN depth BETWEEN 4 AND 5 THEN '4-5' WHEN depth BETWEEN 6 AND 10 THEN '6-10' ELSE '10+' END as depth_range, chain, count(*) as count FROM fork_events WHERE $__timeFilter(detected_at) GROUP BY 1, 2 ORDER BY min(depth)",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "competing blocks detail",
+      "description": "all blocks at forked heights with relay parent info",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "targets": [
+        {
+          "rawSql": "SELECT b.chain, b.block_number, b.block_hash, coalesce(b.author_name, b.author, 'unknown') as author, b.relay_parent, array_to_string(b.seen_by, ', ') as seen_by, b.imported_at, e.cause, e.resolved, e.resolved_hash FROM fork_blocks b LEFT JOIN fork_events e ON b.chain = e.chain AND b.block_number = e.block_number WHERE $__timeFilter(b.imported_at) AND ('$chain' = 'all' OR b.chain = '$chain') ORDER BY b.imported_at DESC LIMIT 200",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "relay fork tracing",
+      "description": "parachain forks caused by relay chain forks with relay height reference",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 38 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "targets": [
+        {
+          "rawSql": "SELECT chain, block_number, array_to_string(authors, ' vs ') as authors, relay_height, depth, detected_at FROM fork_events WHERE cause = 'relay_fork' AND $__timeFilter(detected_at) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY detected_at DESC LIMIT 100",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "finality lag history",
+      "description": "long-term finality lag from periodic snapshots",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 46 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10 },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT recorded_at as time, chain || '/' || node as metric, lag as value FROM finality_log WHERE $__timeFilter(recorded_at) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY recorded_at",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "chain",
+        "type": "custom",
+        "query": "all,polkadot,hydration,assethub,moonbeam",
+        "current": { "text": "all", "value": "all" }
+      },
+      {
+        "name": "DS_POSTGRES",
+        "type": "datasource",
+        "query": "postgres"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["forkwatch", "substrate", "forks", "postgres"],
+  "title": "forkwatch - fork analysis",
+  "uid": "forkwatch-postgres"
+}

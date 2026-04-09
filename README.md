@@ -188,7 +188,17 @@ scrape_configs:
 
 add two data sources:
 1. **prometheus** — query `forkwatch_*` metrics for real-time dashboards
-2. **postgresql** — connect to `forkwatch-db:5432` (db: `forkwatch`, user: `forkwatch`) for detailed fork event queries
+2. **postgresql** — connect to `db:5432` (db: `forkwatch`, user: `forkwatch`) for detailed fork event queries
+
+three pre-built dashboards are in `grafana/`:
+
+| dashboard | datasource | file | description |
+|---|---|---|---|
+| **real-time metrics** | prometheus | `prometheus-dashboard.json` | fork rate, finality lag, depth heatmap, author attribution, node connections, cause breakdown |
+| **fork analysis** | postgresql | `postgres-dashboard.json` | fork event table, daily trends, top authors, depth distribution, competing block detail, relay fork tracing |
+| **combined overview** | both | `combined-dashboard.json` | finality lag + fork events overlay, relay chain → parachain causation correlation, fork resolution time, author analysis with cause breakdown |
+
+import via grafana ui: dashboards → import → upload json file. select your prometheus and postgresql datasources when prompted.
 
 ## resilience
 

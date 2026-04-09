@@ -1,0 +1,326 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 2,
+  "links": [],
+  "panels": [
+    {
+      "title": "",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "title": "fork rate (real-time)",
+      "description": "live fork detection rate from prometheus",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 40, "stacking": { "mode": "normal" } },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_fork_events_total[$__rate_interval])",
+          "legendFormat": "{{chain}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "fork cause ratio (real-time)",
+      "description": "relay_fork vs collator_contention from prometheus",
+      "type": "piechart",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut"
+      },
+      "targets": [
+        {
+          "expr": "increase(forkwatch_parachain_fork_cause_total{chain=\"$chain\"}[$__range])",
+          "legendFormat": "{{cause}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "connections & finality",
+      "description": "node status overview",
+      "type": "stat",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "forkwatch_node_connected{chain=\"$chain\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "title": "finality lag (live) + fork events (db)",
+      "description": "prometheus finality lag with database fork events overlaid as annotations",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 10, "axisLabel": "finality lag (blocks)" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          },
+          "color": { "mode": "continuous-GrYlRd" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "fork:.*" },
+            "properties": [
+              { "id": "custom.drawStyle", "value": "points" },
+              { "id": "custom.pointSize", "value": 8 },
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.axisLabel", "value": "fork depth" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "forkwatch_finality_lag_blocks{chain=\"$chain\"}",
+          "legendFormat": "lag {{node}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT detected_at as time, 'fork: ' || chain || ' ' || coalesce(cause, '') as metric, depth as value FROM fork_events WHERE $__timeFilter(detected_at) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY detected_at",
+          "format": "time_series",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "title": "author fork rate (live) vs fork count (db)",
+      "description": "prometheus fork ratio on left, database total fork blocks on right",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 19 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "targets": [
+        {
+          "rawSql": "SELECT coalesce(b.author_name, b.author, 'unknown') as author, b.chain, count(*) as fork_blocks, count(DISTINCT b.block_number) as forked_heights, round(avg(e.depth)::numeric, 1) as avg_depth, count(DISTINCT CASE WHEN e.cause = 'relay_fork' THEN e.id END) as relay_forks, count(DISTINCT CASE WHEN e.cause = 'collator_contention' THEN e.id END) as contention_forks FROM fork_blocks b LEFT JOIN fork_events e ON b.chain = e.chain AND b.block_number = e.block_number WHERE $__timeFilter(b.imported_at) AND ('$chain' = 'all' OR b.chain = '$chain') GROUP BY b.author, b.author_name, b.chain ORDER BY fork_blocks DESC LIMIT 30",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "relay_forks" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "contention_forks" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "title": "relay chain forks → parachain impact",
+      "description": "relay chain fork rate (prometheus) correlated with parachain relay-caused forks (db)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 30 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 15 },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "polkadot.*" },
+            "properties": [
+              { "id": "custom.drawStyle", "value": "bars" },
+              { "id": "custom.fillOpacity", "value": 50 },
+              { "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } },
+              { "id": "custom.axisPlacement", "value": "left" },
+              { "id": "custom.axisLabel", "value": "relay chain forks" }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*parachain.*" },
+            "properties": [
+              { "id": "custom.drawStyle", "value": "line" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.axisLabel", "value": "parachain relay-caused forks" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "increase(forkwatch_fork_events_total{chain=\"polkadot\"}[$__rate_interval])",
+          "legendFormat": "polkadot forks",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT date_trunc('hour', detected_at) as time, 'parachain: ' || chain as metric, count(*) as value FROM fork_events WHERE cause = 'relay_fork' AND $__timeFilter(detected_at) GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "title": "fork resolution time",
+      "description": "time between fork detection and finalization (from db)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "points", "pointSize": 5 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT detected_at as time, chain as metric, extract(epoch from (resolved_at - detected_at)) as value FROM fork_events WHERE resolved = true AND resolved_at IS NOT NULL AND $__timeFilter(detected_at) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY detected_at",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "active forks + fork depth heatmap",
+      "description": "prometheus active forks gauge with database depth overlay",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 20 },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "depth.*" },
+            "properties": [
+              { "id": "custom.drawStyle", "value": "points" },
+              { "id": "custom.pointSize", "value": 6 },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.axisLabel", "value": "fork depth" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "forkwatch_active_fork_heights{chain=\"$chain\"}",
+          "legendFormat": "active forks",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT detected_at as time, 'depth: ' || chain as metric, depth as value FROM fork_events WHERE $__timeFilter(detected_at) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY detected_at",
+          "format": "time_series",
+          "refId": "B"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "chain",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(forkwatch_fork_events_total, chain)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": "all",
+        "current": { "text": "hydration", "value": "hydration" }
+      },
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus"
+      },
+      {
+        "name": "DS_POSTGRES",
+        "type": "datasource",
+        "query": "postgres"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["forkwatch", "substrate", "forks", "combined"],
+  "title": "forkwatch - combined overview",
+  "uid": "forkwatch-combined"
+}

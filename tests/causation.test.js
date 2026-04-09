@@ -101,15 +101,15 @@ describe('ForkCausation', () => {
 		expect(m.parachain_forks_relay_caused_total.inc).not.toHaveBeenCalled();
 	});
 
-	test('labels fork as relay_fork when different relay parents', async () => {
+	test('labels fork as relay_fork when same relay number but different hashes', async () => {
 		let callCount = 0;
-		const relayParents = ['0xrelay_aaa', '0xrelay_bbb'];
+		const relayHashes = ['0xrelay_aaa', '0xrelay_bbb'];
 
 		addMockConnection(parachainCtx, jest.fn(async () => ({
 			isSome: true,
 			unwrap: () => ({
-				relayParentStorageRoot: { toHex: () => relayParents[callCount++] },
-				relayParentNumber: { toNumber: () => 1000 + callCount },
+				relayParentStorageRoot: { toHex: () => relayHashes[callCount++] },
+				relayParentNumber: { toNumber: () => 1000 }, // same relay number
 			}),
 		})));
 
@@ -131,13 +131,39 @@ describe('ForkCausation', () => {
 		});
 	});
 
-	test('updates db with cause and relay_height', async () => {
+	test('labels fork as collator_contention when different relay numbers', async () => {
+		let callCount = 0;
+
+		addMockConnection(parachainCtx, jest.fn(async () => ({
+			isSome: true,
+			unwrap: () => ({
+				relayParentStorageRoot: { toHex: () => '0xhash_' + callCount },
+				relayParentNumber: { toNumber: () => 1000 + callCount++ }, // different relay numbers
+			}),
+		})));
+
+		const causation = new ForkCausation(parachainCtx, relayChainCtx, m);
+
+		const blocksAtHeight = new Map();
+		blocksAtHeight.set('0xaa', { hash: '0xaa', number: 500, author: 'alice' });
+		blocksAtHeight.set('0xbb', { hash: '0xbb', number: 500, author: 'bob' });
+
+		await causation.analyzeForkCause(500, blocksAtHeight);
+
+		expect(m.parachain_fork_cause_total.inc).toHaveBeenCalledWith({
+			chain: 'hydration',
+			cause: 'collator_contention',
+		});
+		expect(m.parachain_forks_relay_caused_total.inc).not.toHaveBeenCalled();
+	});
+
+	test('updates db with cause and relay_height for relay fork', async () => {
 		let callCount = 0;
 		addMockConnection(parachainCtx, jest.fn(async () => ({
 			isSome: true,
 			unwrap: () => ({
-				relayParentStorageRoot: { toHex: () => callCount === 0 ? '0xr1' : '0xr2' },
-				relayParentNumber: { toNumber: () => { callCount++; return 999 + callCount; } },
+				relayParentStorageRoot: { toHex: () => '0xr' + callCount++ },
+				relayParentNumber: { toNumber: () => 1000 }, // same relay number, different hashes
 			}),
 		})));
 

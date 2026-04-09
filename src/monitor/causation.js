@@ -42,33 +42,43 @@ export class ForkCausation {
 			return;
 		}
 
-		// compare relay parents
-		const uniqueRelayParents = new Set(validRelayParents.map(rp => rp.hash));
+		// compare relay parents by NUMBER first, then by hash at the same number.
+		// - same relay number, same hash → collator_contention (same relay context)
+		// - same relay number, different hash → relay_fork (relay chain forked at that height)
+		// - different relay numbers → collator_contention (collators built at different times, normal)
+		const relayNumbers = validRelayParents.map(rp => rp.number);
+		const relayHashes = validRelayParents.map(rp => rp.hash);
+		const uniqueNumbers = new Set(relayNumbers.filter(n => n !== null));
+		const uniqueHashes = new Set(relayHashes.filter(h => h !== null));
 		let cause;
 		let relayHeight = null;
 
-		if (uniqueRelayParents.size > 1) {
+		if (uniqueNumbers.size === 1 && uniqueHashes.size > 1) {
+			// same relay height, different block hashes → actual relay chain fork
 			cause = 'relay_fork';
-			// try to get the relay height from relay chain block tree
-			for (const rp of validRelayParents) {
-				if (rp.number) {
-					relayHeight = rp.number;
-					break;
-				}
-			}
+			relayHeight = relayNumbers.find(n => n !== null);
 			console.log(
 				`[${this.parachain.name}] fork at height ${height} caused by relay chain fork` +
-				(relayHeight ? ` at relay height ${relayHeight}` : '')
+				` at relay height ${relayHeight} (${uniqueHashes.size} competing relay blocks)`
 			);
 			this.m.parachain_forks_relay_caused_total.inc({
 				chain: this.parachain.name,
 				relay_chain: this.relayChain.name,
 			});
+		} else if (uniqueNumbers.size > 1) {
+			// different relay heights → collators built at different times, not a relay fork
+			cause = 'collator_contention';
+			const numbers = Array.from(uniqueNumbers).sort((a, b) => a - b);
+			console.log(
+				`[${this.parachain.name}] fork at height ${height} caused by collator contention ` +
+				`(different relay heights: ${numbers.join(' vs ')})`
+			);
 		} else {
+			// same relay number, same hash → both collators produced for same relay context
 			cause = 'collator_contention';
 			console.log(
 				`[${this.parachain.name}] fork at height ${height} caused by collator contention ` +
-				`(same relay parent: ${validRelayParents[0].hash.slice(0, 18)}...)`
+				`(same relay parent #${relayNumbers[0]})`
 			);
 		}
 

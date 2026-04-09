@@ -81,8 +81,11 @@ export class ForkCausation {
 		if (dbEnabled()) {
 			await db().query(
 				`UPDATE fork_events SET cause = $1, relay_height = $2
-				 WHERE chain = $3 AND block_number = $4 AND cause IS NULL
-				 ORDER BY detected_at DESC LIMIT 1`,
+				 WHERE id = (
+				   SELECT id FROM fork_events
+				   WHERE chain = $3 AND block_number = $4 AND cause IS NULL
+				   ORDER BY detected_at DESC LIMIT 1
+				 )`,
 				[cause, relayHeight, this.parachain.name, height]
 			).catch(err => console.error(`failed to update fork cause: ${err.message}`));
 

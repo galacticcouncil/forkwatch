@@ -43,25 +43,6 @@ describe('ForkDetector', () => {
 			});
 		});
 
-		test('increments author_blocks_total when author present', async () => {
-			await detector.onNewBlock('0xaa', 100, '0x99', 'alice', 'alice-name', null, 'node-1');
-			expect(m.author_blocks_total.inc).toHaveBeenCalledWith({
-				chain: 'test-chain', author: 'alice-name'
-			});
-		});
-
-		test('uses raw author when authorName is null', async () => {
-			await detector.onNewBlock('0xaa', 100, '0x99', 'alice', null, null, 'node-1');
-			expect(m.author_blocks_total.inc).toHaveBeenCalledWith({
-				chain: 'test-chain', author: 'alice'
-			});
-		});
-
-		test('does not increment author_blocks_total when no author', async () => {
-			await detector.onNewBlock('0xaa', 100, '0x99', null, null, null, 'node-1');
-			expect(m.author_blocks_total.inc).not.toHaveBeenCalled();
-		});
-
 		test('skips processing for duplicate blocks', async () => {
 			await detector.onNewBlock('0xaa', 100, '0x99', null, null, null, 'node-1');
 			m.blocks_imported_total.inc.mockClear();

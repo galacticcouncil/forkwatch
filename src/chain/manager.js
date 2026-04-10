@@ -117,18 +117,20 @@ export class ChainContext {
 	startSubscriptions(conn, nodeConfig) {
 		const nodeName = nodeConfig.name;
 		let watchdogTimer;
-		let alive = true;
+
+		const stopWatchdog = () => clearTimeout(watchdogTimer);
 
 		const resetWatchdog = () => {
 			clearTimeout(watchdogTimer);
 			watchdogTimer = setTimeout(() => {
-				if (!alive) return;
-				alive = false;
 				console.error(`[${this.name}/${nodeName}] no block for ${timeout}s, reconnecting`);
 				this.m.node_connected.set({ chain: this.name, node: nodeName }, 0);
 				this.reconnectNode(nodeConfig);
 			}, timeout * 1000);
 		};
+
+		// clean up watchdog when connection is torn down
+		conn.addUnsub(stopWatchdog);
 
 		resetWatchdog();
 
@@ -150,20 +152,17 @@ export class ChainContext {
 				{ stateRoot, extrinsicsRoot }
 			);
 
-			// only extract authors when a fork is detected
 			if (forked) {
 				await this.enrichForkAuthors(conn.api, number);
 			}
-		});
+		}).then(unsub => conn.addUnsub(unsub));
 
-		// subscribe to best head (finality lag)
 		conn.api.rpc.chain.subscribeNewHeads((header) => {
 			resetWatchdog();
 			this.m.node_connected.set({ chain: this.name, node: nodeName }, 1);
 			this.finalityTracker.onBestHead(nodeName, header.number.toNumber());
-		});
+		}).then(unsub => conn.addUnsub(unsub));
 
-		// subscribe to finalized head (pruning + resolution)
 		conn.api.rpc.chain.subscribeFinalizedHeads(async (header) => {
 			resetWatchdog();
 			this.m.node_connected.set({ chain: this.name, node: nodeName }, 1);
@@ -185,7 +184,7 @@ export class ChainContext {
 			const pruneBelow = finalizedNumber - pruneAfter;
 			this.blockTree.prune(pruneBelow);
 			this.forkDetector.pruneRecordedForks(pruneBelow);
-		});
+		}).then(unsub => conn.addUnsub(unsub));
 
 		console.log(`[${this.name}/${nodeName}] subscriptions started`);
 	}

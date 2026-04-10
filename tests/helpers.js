@@ -11,7 +11,6 @@ export function createMockMetrics() {
 		fork_depth: metric(),
 		active_fork_heights: metric(),
 		author_fork_blocks_total: metric(),
-		author_blocks_total: metric(),
 		best_block_height: metric(),
 		finalized_block_height: metric(),
 		finality_lag_blocks: metric(),

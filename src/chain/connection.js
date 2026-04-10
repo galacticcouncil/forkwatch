@@ -4,7 +4,6 @@ const CONNECTION_TIMEOUT = 15000; // 15s
 
 /**
  * manages a single websocket connection to a substrate node
- * with automatic reconnection
  */
 export class NodeConnection {
 	constructor(chainName, nodeName, url) {
@@ -16,23 +15,15 @@ export class NodeConnection {
 		/** @type {WsProvider|null} */
 		this.provider = null;
 		this.connected = false;
-		this._onReconnect = null;
+		/** @type {Function[]} subscription unsub functions */
+		this._unsubs = [];
 	}
 
 	get tag() {
 		return `[${this.chainName}/${this.nodeName}]`;
 	}
 
-	/**
-	 * register a callback that fires when connection is (re)established.
-	 * used by manager to re-subscribe after reconnect.
-	 */
-	onReconnect(fn) {
-		this._onReconnect = fn;
-	}
-
 	async connect() {
-		// WsProvider with autoConnect handles reconnection internally
 		this.provider = new WsProvider(this.url, false);
 
 		this.provider.on('disconnected', () => {
@@ -43,18 +34,11 @@ export class NodeConnection {
 		});
 
 		this.provider.on('connected', () => {
-			const wasDisconnected = !this.connected;
 			this.connected = true;
-			if (wasDisconnected && this.api) {
-				console.log(`${this.tag} reconnected to ${this.url}`);
-			}
 		});
 
-		this.provider.on('error', () => {
-			// suppress, WsProvider retries automatically
-		});
+		this.provider.on('error', () => {});
 
-		// initial connect with timeout
 		await Promise.race([
 			this.provider.connect(),
 			rejectAfter(CONNECTION_TIMEOUT, 'connection timeout'),
@@ -74,13 +58,29 @@ export class NodeConnection {
 		return this.api;
 	}
 
+	/**
+	 * track a subscription so it can be cleaned up on disconnect
+	 */
+	addUnsub(unsub) {
+		this._unsubs.push(unsub);
+	}
+
 	async disconnect() {
-		if (this.api) {
-			await this.api.disconnect();
-			this.api = null;
-			this.provider = null;
-			this.connected = false;
+		// unsubscribe all active subscriptions first
+		for (const unsub of this._unsubs) {
+			try { await unsub(); } catch (e) {}
 		}
+		this._unsubs = [];
+
+		if (this.api) {
+			try { await this.api.disconnect(); } catch (e) {}
+			this.api = null;
+		}
+		if (this.provider) {
+			this.provider.removeAllListeners();
+			this.provider = null;
+		}
+		this.connected = false;
 	}
 }
 

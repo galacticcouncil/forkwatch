@@ -45,6 +45,35 @@ export class ChainContext {
 		return this.authorExtractor.resolveIdentity(api, address);
 	}
 
+	/**
+	 * enrich all blocks at a forked height with author info.
+	 * only called when a fork is detected to avoid memory leaks.
+	 */
+	async enrichForkAuthors(api, height) {
+		const blocksAtHeight = this.blockTree.getBlocksAtHeight(height);
+		if (!blocksAtHeight) return;
+
+		for (const [hash, block] of blocksAtHeight) {
+			if (block.author) continue;
+
+			try {
+				const author = await this.authorExtractor.extractAuthor(api, hash);
+				if (author) {
+					block.author = author;
+					await this.resolveAuthorIdentity(api, author);
+					block.authorName = this.resolveAuthorName(author);
+
+					this.m.author_fork_blocks_total.inc({
+						chain: this.name,
+						author: block.authorName || block.author,
+					});
+				}
+			} catch (e) {
+				// non-critical
+			}
+		}
+	}
+
 	async connect() {
 		await Promise.all(this.nodeConfigs.map(nodeConfig =>
 			this.connectNode(nodeConfig)
@@ -104,6 +133,9 @@ export class ChainContext {
 		resetWatchdog();
 
 		// subscribe to all heads (fork detection)
+		// author extraction is deferred to fork detection only -- calling
+		// api.derive.chain.getHeader on every block leaks memory via
+		// polkadot.js internal caching (~50KB per block, causing OOM/SIGSEGV)
 		conn.api.rpc.chain.subscribeAllHeads(async (header) => {
 			resetWatchdog();
 			this.m.node_connected.set({ chain: this.name, node: nodeName }, 1);
@@ -113,24 +145,15 @@ export class ChainContext {
 			const stateRoot = header.stateRoot.toHex();
 			const extrinsicsRoot = header.extrinsicsRoot.toHex();
 
-			let author = null;
-			try {
-				author = await this.authorExtractor.extractAuthor(conn.api, hash);
-			} catch (e) {
-				// non-critical, continue without author
-			}
-
-			// resolve identity (cached after first fetch)
-			if (author && !this.authorExtractor.identityCache.has(author)) {
-				this.resolveAuthorIdentity(conn.api, author).catch(() => {});
-			}
-
-			const authorName = this.resolveAuthorName(author);
-
-			await this.forkDetector.onNewBlock(
-				hash, number, parentHash, author, authorName, null, nodeName,
+			const { record, forked } = await this.forkDetector.onNewBlock(
+				hash, number, parentHash, null, null, null, nodeName,
 				{ stateRoot, extrinsicsRoot }
 			);
+
+			// only extract authors when a fork is detected
+			if (forked) {
+				await this.enrichForkAuthors(conn.api, number);
+			}
 		});
 
 		// subscribe to best head (finality lag)

@@ -28,11 +28,6 @@ const m = metrics.register('forkwatch', {
 		help: 'total blocks produced by an author that were part of a fork',
 		labels: ['chain', 'author'],
 	},
-	author_blocks_total: {
-		type: 'counter',
-		help: 'total blocks produced by each author',
-		labels: ['chain', 'author'],
-	},
 	best_block_height: {
 		type: 'gauge',
 		help: 'best (unfinalized) block height',

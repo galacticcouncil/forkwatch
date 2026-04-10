@@ -23,13 +23,6 @@ export class ForkDetector {
 
 		this.m.blocks_imported_total.inc({ chain: this.chainName, node: nodeName });
 
-		if (author) {
-			this.m.author_blocks_total.inc({
-				chain: this.chainName,
-				author: authorName || author
-			});
-		}
-
 		const blocksAtHeight = this.blockTree.getBlocksAtHeight(number);
 		const forked = blocksAtHeight.size > 1;
 

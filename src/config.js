@@ -63,6 +63,26 @@ const presets = {
 			],
 			knownAuthors: {},
 		},
+		{
+			name: 'interlay',
+			consensus: 'aura',
+			nodes: [
+				{ name: 'kintsugi-labs', url: 'wss://api.interlay.io/parachain' },
+				{ name: 'dwellir', url: 'wss://interlay-rpc.dwellir.com' },
+				{ name: 'ibp', url: 'wss://interlay.ibp.network' },
+			],
+			knownAuthors: {},
+		},
+		{
+			name: 'bifrost',
+			consensus: 'aura',
+			nodes: [
+				{ name: 'liebi', url: 'wss://hk.p.bifrost-rpc.liebi.com/ws' },
+				{ name: 'dwellir', url: 'wss://bifrost-polkadot-rpc.dwellir.com' },
+				{ name: 'ibp', url: 'wss://bifrost-polkadot.ibp.network' },
+			],
+			knownAuthors: {},
+		},
 	],
 	basilisk: [
 		{

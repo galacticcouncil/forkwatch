@@ -115,12 +115,13 @@ describe('db/queries', () => {
 	});
 
 	describe('resolveForkEvent', () => {
-		test('updates with correct params', async () => {
+		test('resolves all events at or below finalized height', async () => {
 			await resolveForkEvent('hydration', 100, '0xwinning');
 
 			const [sql, params] = mockQuery.mock.calls[0];
 			expect(sql).toContain('UPDATE fork_events SET resolved = TRUE');
-			expect(params).toEqual(['hydration', 100, '0xwinning']);
+			expect(sql).toContain('block_number <= $2');
+			expect(params).toEqual(['hydration', 100]);
 		});
 	});
 

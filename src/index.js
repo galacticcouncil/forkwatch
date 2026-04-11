@@ -167,6 +167,9 @@ function startRetentionCleanup() {
 }
 
 async function main() {
+	// suppress polkadot.js verbose logging
+	console.warn = () => {};
+
 	console.log('forkwatch starting...');
 
 	if (chains.length === 0) {

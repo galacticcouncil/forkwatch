@@ -31,9 +31,9 @@ export async function insertForkEvent(event) {
 export async function resolveForkEvent(chain, blockNumber, resolvedHash) {
 	if (!dbEnabled()) return noop;
 	return db().query(
-		`UPDATE fork_events SET resolved = TRUE, resolved_hash = $3, resolved_at = NOW()
-		 WHERE chain = $1 AND block_number = $2 AND resolved = FALSE`,
-		[chain, blockNumber, resolvedHash]
+		`UPDATE fork_events SET resolved = TRUE, resolved_at = NOW()
+		 WHERE chain = $1 AND block_number <= $2 AND resolved = FALSE`,
+		[chain, blockNumber]
 	);
 }
 

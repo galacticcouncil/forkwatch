@@ -11,6 +11,8 @@ export class ForkDetector {
 		this.recordedForks = new Map();
 		/** @type {Array} in-memory ring buffer of recent fork events */
 		this.recentForks = [];
+		/** @type {number} total fork count since startup */
+		this.totalForkCount = 0;
 	}
 
 	/**
@@ -56,6 +58,7 @@ export class ForkDetector {
 		this.m.active_fork_heights.inc({ chain: this.chainName });
 
 		// in-memory ring buffer (always available, even without db)
+		this.totalForkCount++;
 		this.recentForks.push({
 			chain: this.chainName,
 			block_number: height,

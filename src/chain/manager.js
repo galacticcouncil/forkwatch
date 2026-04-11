@@ -243,6 +243,7 @@ export class ChainContext {
 			blockTimeMs: this.blockTimeMs,
 			bestHeight: this.blockTree.bestHeight,
 			finalizedHeight: this.blockTree.finalizedHeight,
+			forkCount: this.forkDetector.totalForkCount,
 			activeForkedHeights: this.blockTree.getForkedHeights(),
 			nodes: this.nodeConfigs.map(nc => {
 				const conn = this.connections.find(c => c.nodeName === nc.name);

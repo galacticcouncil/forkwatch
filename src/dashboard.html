@@ -127,19 +127,19 @@ function lagClass(lag, chain) {
   return lag > 20 ? 'bad' : lag > 10 ? 'warn' : 'good';
 }
 
-function renderChain(name, data, causes, forkCount30) {
+function renderChain(name, data, causes, uptimeS) {
   const lag = data.bestHeight - data.finalizedHeight;
   const connected = data.nodes.filter(n => n.connected).length;
   const total = data.nodes.length;
-  const forkCount = data.activeForkedHeights.length;
   const btMs = data.blockTimeMs;
   const btLabel = btMs ? `${(btMs / 1000).toFixed(btMs % 1000 ? 1 : 0)}s` : '?';
 
-  // estimate fork rate: forks in last 30 events / expected blocks in that window
+  // fork rate: total forks from ring buffer / expected blocks in uptime
   let forkRateStr = '-';
-  if (btMs && forkCount30 && forkCount30.total > 1 && forkCount30.spanMs > 0) {
-    const expectedBlocks = forkCount30.spanMs / btMs;
-    const rate = (forkCount30.total / expectedBlocks) * 100;
+  const forkCount = data.forkCount || 0;
+  if (btMs && uptimeS > 10 && forkCount > 0) {
+    const expectedBlocks = (uptimeS * 1000) / btMs;
+    const rate = (forkCount / expectedBlocks) * 100;
     forkRateStr = `${rate.toFixed(1)}%`;
   }
   const rateClass = parseFloat(forkRateStr) > 30 ? 'bad' : parseFloat(forkRateStr) > 15 ? 'warn' : '';
@@ -237,24 +237,15 @@ async function update() {
     document.getElementById('refresh').textContent = `updated ${new Date().toLocaleTimeString()}`;
 
     const causesByChain = {};
-    const forkStatsByChain = {};
-    const uptimeMs = status.uptime * 1000;
     forks.forEach(f => {
       if (!causesByChain[f.chain]) causesByChain[f.chain] = {};
       const cause = f.cause || 'pending';
       causesByChain[f.chain][cause] = (causesByChain[f.chain][cause] || 0) + 1;
-
-      if (!forkStatsByChain[f.chain]) forkStatsByChain[f.chain] = { total: 0 };
-      forkStatsByChain[f.chain].total++;
     });
-    // use uptime as the window for fork rate
-    for (const s of Object.values(forkStatsByChain)) {
-      s.spanMs = uptimeMs;
-    }
 
     const chainNames = Object.keys(status).filter(k => !['database', 'uptime'].includes(k));
     document.getElementById('chains').innerHTML = chainNames.map(name =>
-      renderChain(name, status[name], causesByChain[name] || {}, forkStatsByChain[name] || {})
+      renderChain(name, status[name], causesByChain[name] || {}, status.uptime)
     ).join('');
 
     document.getElementById('forks').innerHTML = forks.map(renderFork).join('');

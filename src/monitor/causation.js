@@ -39,7 +39,21 @@ export class ForkCausation {
 			blocks.map(block => this.getRelayParent(block))
 		);
 
-		const validRelayParents = relayParents.filter(rp => rp !== null);
+		let validRelayParents = relayParents.filter(rp => rp !== null);
+
+		// retry once after a short delay if we couldn't get all relay parents
+		// (block state may not be available on nodes immediately after import)
+		if (validRelayParents.length < blocks.length) {
+			await new Promise(r => setTimeout(r, 2000));
+			const retryParents = await Promise.all(
+				blocks.map((block, i) => relayParents[i] ? relayParents[i] : this.getRelayParent(block))
+			);
+			for (let i = 0; i < retryParents.length; i++) {
+				if (retryParents[i]) relayParents[i] = retryParents[i];
+			}
+			validRelayParents = relayParents.filter(rp => rp !== null);
+		}
+
 		if (validRelayParents.length < 2) {
 			console.log(`[${this.parachain.name}] could not determine relay parents for fork at height ${height}`);
 			return;
@@ -169,28 +183,32 @@ export class ForkCausation {
 	 * queries parachainSystem.validationData storage at the block hash.
 	 */
 	async getRelayParent(block) {
-		const conn = this.parachain.connections.find(c => c.connected);
-		if (!conn) return null;
+		// try all connected nodes, not just the first one
+		const connections = this.parachain.connections.filter(c => c.connected);
+		if (!connections.length) return null;
 
-		try {
-			const validationData = await conn.api.query.parachainSystem.validationData.at(block.hash);
-			if (validationData.isSome) {
-				const data = validationData.unwrap();
-				return {
-					hash: data.relayParentStorageRoot.toHex(),
-					number: data.relayParentNumber.toNumber(),
-				};
-			}
-
-			const relayNumber = await conn.api.query.parachainSystem.lastRelayChainBlockNumber.at(block.hash);
-			if (relayNumber) {
-				return { hash: null, number: relayNumber.toNumber() };
-			}
-		} catch (e) {
+		for (const conn of connections) {
 			try {
-				return await this.getRelayParentFromInherent(conn.api, block.hash);
-			} catch (e2) {
-				return null;
+				const validationData = await conn.api.query.parachainSystem.validationData.at(block.hash);
+				if (validationData.isSome) {
+					const data = validationData.unwrap();
+					return {
+						hash: data.relayParentStorageRoot.toHex(),
+						number: data.relayParentNumber.toNumber(),
+					};
+				}
+
+				const relayNumber = await conn.api.query.parachainSystem.lastRelayChainBlockNumber.at(block.hash);
+				if (relayNumber) {
+					return { hash: null, number: relayNumber.toNumber() };
+				}
+			} catch (e) {
+				try {
+					return await this.getRelayParentFromInherent(conn.api, block.hash);
+				} catch (e2) {
+					// try next node
+					continue;
+				}
 			}
 		}
 

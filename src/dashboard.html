@@ -61,7 +61,7 @@ tr:hover td { background: #161b22; }
 </head>
 <body>
 <div class="header">
-  <h1>forkwatch</h1>
+  <h1>f<span style="filter:blur(2px)">or</span>kwatch</h1>
   <span class="db" id="db"></span>
   <span class="uptime" id="uptime"></span>
   <span class="refresh" id="refresh"></span>
@@ -83,15 +83,26 @@ const CAUSE_COLORS = {
   double_production: 'double',
   double_production_timing: 'double-timing',
   double_production_reorg: 'double-reorg',
+  pending: 'unknown',
 };
 
 const CAUSE_LABELS = {
+  relay_fork: 'relay',
+  relay_fork_same_author: 'relay+dbl',
+  collator_contention: 'contention',
+  double_production: 'double',
+  double_production_timing: 'dbl timing',
+  double_production_reorg: 'dbl reorg',
+  pending: 'pending',
+};
+
+const CAUSE_LABELS_LONG = {
   relay_fork: 'relay fork',
   relay_fork_same_author: 'relay fork (same author)',
   collator_contention: 'collator contention',
   double_production: 'double production',
-  double_production_timing: 'double prod. (timing)',
-  double_production_reorg: 'double prod. (reorg)',
+  double_production_timing: 'double production (timing)',
+  double_production_reorg: 'double production (reorg)',
 };
 
 function formatUptime(s) {
@@ -152,19 +163,51 @@ function renderChain(name, data, causes) {
   </div>`;
 }
 
+const AUTHOR_HUES = [
+  210, 150, 30, 330, 270, 60, 180, 120, 300, 0, 240, 90, 345, 195, 45,
+];
+const authorColorMap = new Map();
+let nextHue = 0;
+
+function authorColor(name) {
+  if (!name || name === 'unknown') return '#6e7681';
+  if (!authorColorMap.has(name)) {
+    authorColorMap.set(name, `hsl(${AUTHOR_HUES[nextHue++ % AUTHOR_HUES.length]}, 60%, 65%)`);
+  }
+  return authorColorMap.get(name);
+}
+
+function shortName(name) {
+  if (!name || name === 'unknown') return '?';
+  if (/^[1-9A-HJ-NP-Za-km-z]{46,}$/.test(name)) return name.slice(0, 6) + '..' + name.slice(-4);
+  if (name.startsWith('0x') && name.length > 16) return name.slice(0, 8) + '..' + name.slice(-4);
+  if (name.length > 20) return name.slice(0, 18) + '..';
+  return name;
+}
+
+function authorSpan(name) {
+  const color = authorColor(name);
+  const short = shortName(name);
+  return `<span style="color:${color}" title="${name}">${short}</span>`;
+}
+
 function renderFork(f) {
   const cause = f.cause || '';
   const color = CAUSE_COLORS[cause] || '';
   const tagClass = color ? `tag-${color}` : '';
   const label = CAUSE_LABELS[cause] || cause || '-';
+  const longLabel = CAUSE_LABELS_LONG[cause] || cause || '';
+  const authorsHtml = f.same_author
+    ? authorSpan(f.authors?.[0]) + ' <span style="color:#6e7681">(x2)</span>'
+    : (f.authors || []).map(authorSpan).join(' <span style="color:#6e7681">vs</span> ');
 
   return `<tr>
     <td>${f.chain}</td>
     <td>${Number(f.block_number).toLocaleString()}</td>
-    <td>${(f.authors || []).join(' vs ')}</td>
-    <td>${cause ? `<span class="tag ${tagClass}">${label}</span>` : '-'}</td>
+    <td>${authorsHtml}</td>
+    <td>${cause ? `<span class="tag ${tagClass}" title="${longLabel}">${label}</span>` : '-'}</td>
     <td>${f.depth}</td>
-    <td>${f.resolved ? 'yes' : '-'}</td>
+    <td style="text-align:center">${f.resolved ? '&#x2705;' : '&#x23F3;'}</td>
     <td>${timeAgo(f.detected_at)}</td>
   </tr>`;
 }
@@ -184,7 +227,8 @@ async function update() {
     const causesByChain = {};
     forks.forEach(f => {
       if (!causesByChain[f.chain]) causesByChain[f.chain] = {};
-      if (f.cause) causesByChain[f.chain][f.cause] = (causesByChain[f.chain][f.cause] || 0) + 1;
+      const cause = f.cause || 'pending';
+      causesByChain[f.chain][cause] = (causesByChain[f.chain][cause] || 0) + 1;
     });
 
     const chainNames = Object.keys(status).filter(k => !['database', 'uptime'].includes(k));

@@ -27,7 +27,7 @@ const presets = {
 		{
 			name: 'hydration',
 			consensus: 'aura',
-			blockTimeMs: 12000,
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'gc', url: 'wss://rpc.hydradx.cloud' },
 				{ name: 'dwellir', url: 'wss://hydration-rpc.n.dwellir.com' },
@@ -60,7 +60,7 @@ const presets = {
 		{
 			name: 'moonbeam',
 			consensus: 'aura',
-			blockTimeMs: 12000,
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'moonbeam-foundation', url: 'wss://wss.api.moonbeam.network' },
 				{ name: 'dwellir', url: 'wss://moonbeam-rpc.n.dwellir.com' },
@@ -83,7 +83,7 @@ const presets = {
 		{
 			name: 'bifrost',
 			consensus: 'aura',
-			blockTimeMs: 12000,
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'liebi', url: 'wss://hk.p.bifrost-rpc.liebi.com/ws' },
 				{ name: 'liebi-us', url: 'wss://us.bifrost-rpc.liebi.com/ws' },
@@ -109,7 +109,7 @@ const presets = {
 		{
 			name: 'basilisk',
 			consensus: 'aura',
-			blockTimeMs: 12000,
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'gc', url: 'wss://rpc.basilisk.cloud' },
 				{ name: 'dwellir', url: 'wss://basilisk-rpc.n.dwellir.com' },
@@ -132,7 +132,7 @@ const presets = {
 		{
 			name: 'moonriver',
 			consensus: 'aura',
-			blockTimeMs: 12000,
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'moonbeam-foundation', url: 'wss://wss.api.moonriver.moonbeam.network' },
 				{ name: 'dwellir', url: 'wss://moonriver-rpc.n.dwellir.com' },

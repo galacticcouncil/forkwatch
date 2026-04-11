@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forkwatch</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; font-size: 13px; }
+.header { padding: 16px 24px; border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 16px; font-weight: 600; color: #f0f6fc; }
+.header .uptime { color: #7d8590; font-size: 12px; }
+.header .db { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+.db.on { background: #1b4332; color: #3fb950; }
+.db.off { background: #3d1f1f; color: #f85149; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; padding: 16px 24px; }
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; }
+.card h2 { font-size: 13px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.card h2 .consensus { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #21262d; color: #7d8590; font-weight: 400; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.stat { background: #0d1117; border-radius: 6px; padding: 8px; }
+.stat .label { font-size: 10px; color: #7d8590; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat .value { font-size: 18px; font-weight: 600; color: #f0f6fc; margin-top: 2px; }
+.stat .value.warn { color: #d29922; }
+.stat .value.bad { color: #f85149; }
+.stat .value.good { color: #3fb950; }
+.nodes { margin-top: 8px; }
+.node { display: inline-flex; align-items: center; gap: 4px; margin: 2px 4px 2px 0; font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #0d1117; }
+.node .dot { width: 6px; height: 6px; border-radius: 50%; }
+.node .dot.up { background: #3fb950; }
+.node .dot.down { background: #f85149; }
+.causes { margin-top: 8px; }
+.cause-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 4px; margin-bottom: 8px; }
+.cause-bar div { height: 100%; }
+.cause-legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; }
+.cause-legend span { display: flex; align-items: center; gap: 4px; }
+.cause-legend .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.color-relay { background: #f47067; }
+.color-relay-same { background: #db6d28; }
+.color-contention { background: #d29922; }
+.color-double { background: #986ee2; }
+.color-double-timing { background: #6e7681; }
+.color-double-reorg { background: #316dca; }
+.color-unknown { background: #21262d; }
+.forks-table { width: 100%; margin-top: 8px; }
+.forks-section { padding: 16px 24px; }
+.forks-section h2 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; color: #7d8590; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+td { padding: 5px 8px; border-bottom: 1px solid #161b22; }
+tr:hover td { background: #161b22; }
+.tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 500; }
+.tag-relay { background: #3d1f1f; color: #f47067; }
+.tag-relay-same { background: #3d2508; color: #db6d28; }
+.tag-contention { background: #3d2e08; color: #d29922; }
+.tag-double { background: #2a1f47; color: #986ee2; }
+.tag-double-timing { background: #1c2028; color: #6e7681; }
+.tag-double-reorg { background: #0e2a52; color: #316dca; }
+.refresh { color: #7d8590; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>forkwatch</h1>
+  <span class="db" id="db"></span>
+  <span class="uptime" id="uptime"></span>
+  <span class="refresh" id="refresh"></span>
+</div>
+<div class="grid" id="chains"></div>
+<div class="forks-section">
+  <h2>recent forks</h2>
+  <table>
+    <thead><tr><th>chain</th><th>height</th><th>authors</th><th>cause</th><th>depth</th><th>resolved</th><th>time</th></tr></thead>
+    <tbody id="forks"></tbody>
+  </table>
+</div>
+
+<script>
+const CAUSE_COLORS = {
+  relay_fork: 'relay',
+  relay_fork_same_author: 'relay-same',
+  collator_contention: 'contention',
+  double_production: 'double',
+  double_production_timing: 'double-timing',
+  double_production_reorg: 'double-reorg',
+};
+
+const CAUSE_LABELS = {
+  relay_fork: 'relay fork',
+  relay_fork_same_author: 'relay fork (same author)',
+  collator_contention: 'collator contention',
+  double_production: 'double production',
+  double_production_timing: 'double prod. (timing)',
+  double_production_reorg: 'double prod. (reorg)',
+};
+
+function formatUptime(s) {
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+}
+
+function lagClass(lag, chain) {
+  if (chain === 'polkadot') return lag > 10 ? 'bad' : lag > 6 ? 'warn' : 'good';
+  return lag > 20 ? 'bad' : lag > 10 ? 'warn' : 'good';
+}
+
+function renderChain(name, data, causes) {
+  const lag = data.bestHeight - data.finalizedHeight;
+  const connected = data.nodes.filter(n => n.connected).length;
+  const total = data.nodes.length;
+  const forkCount = data.activeForkedHeights.length;
+
+  const causeEntries = Object.entries(causes);
+  const causeTotal = causeEntries.reduce((s, [, v]) => s + v, 0);
+
+  let causeBar = '';
+  let causeLegend = '';
+  if (causeTotal > 0) {
+    causeBar = '<div class="cause-bar">' + causeEntries.map(([cause, count]) => {
+      const pct = (count / causeTotal * 100).toFixed(1);
+      const color = CAUSE_COLORS[cause] || 'unknown';
+      return `<div class="color-${color}" style="width:${pct}%" title="${CAUSE_LABELS[cause] || cause}: ${count}"></div>`;
+    }).join('') + '</div>';
+    causeLegend = '<div class="cause-legend">' + causeEntries.map(([cause, count]) => {
+      const color = CAUSE_COLORS[cause] || 'unknown';
+      return `<span><span class="dot color-${color}"></span>${CAUSE_LABELS[cause] || cause} ${count}</span>`;
+    }).join('') + '</div>';
+  }
+
+  return `<div class="card">
+    <h2>${name} <span class="consensus">${data.consensus}</span></h2>
+    <div class="stats">
+      <div class="stat"><div class="label">best</div><div class="value">${data.bestHeight.toLocaleString()}</div></div>
+      <div class="stat"><div class="label">finality lag</div><div class="value ${lagClass(lag, name)}">${lag}</div></div>
+      <div class="stat"><div class="label">active forks</div><div class="value ${forkCount > 15 ? 'warn' : ''}">${forkCount}</div></div>
+    </div>
+    <div class="nodes">${data.nodes.map(n =>
+      `<span class="node"><span class="dot ${n.connected ? 'up' : 'down'}"></span>${n.name}</span>`
+    ).join('')}</div>
+    ${causeBar ? `<div class="causes">${causeBar}${causeLegend}</div>` : ''}
+  </div>`;
+}
+
+function renderFork(f) {
+  const cause = f.cause || '';
+  const color = CAUSE_COLORS[cause] || '';
+  const tagClass = color ? `tag-${color}` : '';
+  const label = CAUSE_LABELS[cause] || cause || '-';
+
+  return `<tr>
+    <td>${f.chain}</td>
+    <td>${Number(f.block_number).toLocaleString()}</td>
+    <td>${(f.authors || []).join(' vs ')}</td>
+    <td>${cause ? `<span class="tag ${tagClass}">${label}</span>` : '-'}</td>
+    <td>${f.depth}</td>
+    <td>${f.resolved ? 'yes' : '-'}</td>
+    <td>${timeAgo(f.detected_at)}</td>
+  </tr>`;
+}
+
+async function update() {
+  try {
+    const [status, forks] = await Promise.all([
+      fetch('/api/status').then(r => r.json()),
+      fetch('/api/forks?limit=30').then(r => r.json()),
+    ]);
+
+    document.getElementById('db').textContent = status.database ? 'db connected' : 'no db';
+    document.getElementById('db').className = `db ${status.database ? 'on' : 'off'}`;
+    document.getElementById('uptime').textContent = `uptime ${formatUptime(status.uptime)}`;
+    document.getElementById('refresh').textContent = `updated ${new Date().toLocaleTimeString()}`;
+
+    const causesByChain = {};
+    forks.forEach(f => {
+      if (!causesByChain[f.chain]) causesByChain[f.chain] = {};
+      if (f.cause) causesByChain[f.chain][f.cause] = (causesByChain[f.chain][f.cause] || 0) + 1;
+    });
+
+    const chainNames = Object.keys(status).filter(k => !['database', 'uptime'].includes(k));
+    document.getElementById('chains').innerHTML = chainNames.map(name =>
+      renderChain(name, status[name], causesByChain[name] || {})
+    ).join('');
+
+    document.getElementById('forks').innerHTML = forks.map(renderFork).join('');
+  } catch (e) {
+    document.getElementById('refresh').textContent = `error: ${e.message}`;
+  }
+}
+
+update();
+setInterval(update, 5000);
+</script>
+</body>
+</html>

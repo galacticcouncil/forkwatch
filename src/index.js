@@ -1,3 +1,6 @@
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { endpoints } from './endpoints.js';
 import { metrics } from './metrics.js';
 import { initDb, closeDb } from './db/index.js';
@@ -5,6 +8,9 @@ import { ChainManager } from './chain/manager.js';
 import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData } from './db/queries.js';
 import { dbEnabled } from './db/index.js';
 import { chains, retentionDays, forkEventRetentionDays } from './config.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const dashboardHtml = readFileSync(join(__dirname, 'dashboard.html'), 'utf8');
 
 const m = metrics.register('forkwatch', {
 	fork_events_total: {
@@ -67,7 +73,24 @@ const m = metrics.register('forkwatch', {
 
 let chainManager;
 
+function getRecentForksFromMemory(chain, limit) {
+	const all = [];
+	for (const [, ctx] of chainManager.chains) {
+		all.push(...ctx.forkDetector.recentForks);
+	}
+	return all
+		.filter(f => !chain || f.chain === chain)
+		.sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at))
+		.slice(0, limit);
+}
+
 function registerApiEndpoints() {
+	// dashboard at root
+	endpoints.app.get('/', (req, res) => {
+		res.set('Content-Type', 'text/html');
+		res.send(dashboardHtml);
+	});
+
 	endpoints.registerEndpoint('status', {
 		'/': {
 			GET: (req, res) => {
@@ -84,15 +107,23 @@ function registerApiEndpoints() {
 		'/': {
 			GET: async (req, res) => {
 				const limit = Math.min(Number(req.query.limit) || 100, 1000);
-				const result = await getRecentForkEvents(null, limit);
-				res.json(result.rows);
+				if (dbEnabled()) {
+					const result = await getRecentForkEvents(null, limit);
+					res.json(result.rows);
+				} else {
+					res.json(getRecentForksFromMemory(null, limit));
+				}
 			}
 		},
 		'/:chain': {
 			GET: async (req, res) => {
 				const limit = Math.min(Number(req.query.limit) || 100, 1000);
-				const result = await getRecentForkEvents(req.params.chain, limit);
-				res.json(result.rows);
+				if (dbEnabled()) {
+					const result = await getRecentForkEvents(req.params.chain, limit);
+					res.json(result.rows);
+				} else {
+					res.json(getRecentForksFromMemory(req.params.chain, limit));
+				}
 			}
 		}
 	});

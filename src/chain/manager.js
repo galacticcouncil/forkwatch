@@ -5,6 +5,7 @@ import { FinalityTracker } from '../monitor/finality-tracker.js';
 import { AuthorExtractor } from '../monitor/author-extractor.js';
 import { ForkCausation } from '../monitor/causation.js';
 import { resolveForkEvent } from '../db/queries.js';
+import { db, dbEnabled } from '../db/index.js';
 import { pruneAfter, timeout } from '../config.js';
 
 const RECONNECT_DELAY = 10000; // 10s between reconnect attempts
@@ -70,6 +71,48 @@ export class ChainContext {
 				}
 			} catch (e) {
 				// non-critical
+			}
+		}
+	}
+
+	/**
+	 * update the ring buffer entry and db with resolved author names after enrichment.
+	 */
+	updateForkAuthors(height) {
+		const blocksAtHeight = this.blockTree.getBlocksAtHeight(height);
+		if (!blocksAtHeight) return;
+
+		const authors = Array.from(blocksAtHeight.values())
+			.map(b => b.authorName || b.author || 'unknown');
+
+		// update ring buffer
+		const entry = this.forkDetector.recentForks.findLast(
+			f => f.chain === this.name && f.block_number === height
+		);
+		if (entry) {
+			entry.authors = authors;
+		}
+
+		// update db
+		if (dbEnabled()) {
+			db().query(
+				`UPDATE fork_events SET authors = $1
+				 WHERE id = (
+				   SELECT id FROM fork_events
+				   WHERE chain = $2 AND block_number = $3
+				   ORDER BY detected_at DESC LIMIT 1
+				 )`,
+				[authors, this.name, height]
+			).catch(() => {});
+
+			// update fork_blocks with authors
+			for (const [, block] of blocksAtHeight) {
+				if (block.author) {
+					db().query(
+						`UPDATE fork_blocks SET author = $1, author_name = $2 WHERE block_hash = $3`,
+						[block.author, block.authorName, block.hash]
+					).catch(() => {});
+				}
 			}
 		}
 	}
@@ -154,6 +197,7 @@ export class ChainContext {
 
 			if (forked) {
 				await this.enrichForkAuthors(conn.api, number);
+				this.updateForkAuthors(number);
 			}
 		}).then(unsub => conn.addUnsub(unsub));
 
@@ -176,7 +220,8 @@ export class ChainContext {
 			);
 
 			// resolve fork events at finalized heights
-			this.forkDetector.onHeightFinalized(finalizedNumber);
+			this.forkDetector.onHeightFinalized(finalizedNumber, finalizedHash);
+
 			await resolveForkEvent(this.name, finalizedNumber, finalizedHash)
 				.catch(() => {}); // ok if no fork event exists at this height
 

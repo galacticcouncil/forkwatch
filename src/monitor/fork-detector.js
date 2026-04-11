@@ -1,5 +1,7 @@
 import { insertForkBlock, insertForkEvent } from '../db/queries.js';
 
+const MAX_RECENT_FORKS = 200;
+
 export class ForkDetector {
 	constructor(blockTree, m, chainName) {
 		this.blockTree = blockTree;
@@ -7,6 +9,8 @@ export class ForkDetector {
 		this.chainName = chainName;
 		/** @type {Map<number, boolean>} tracks heights where we already recorded a fork event */
 		this.recordedForks = new Map();
+		/** @type {Array} in-memory ring buffer of recent fork events */
+		this.recentForks = [];
 	}
 
 	/**
@@ -50,6 +54,27 @@ export class ForkDetector {
 		this.m.fork_events_total.inc({ chain: this.chainName });
 		this.m.fork_depth.observe({ chain: this.chainName }, depth);
 		this.m.active_fork_heights.inc({ chain: this.chainName });
+
+		// in-memory ring buffer (always available, even without db)
+		this.recentForks.push({
+			chain: this.chainName,
+			block_number: height,
+			competing_count: blocks.length,
+			authors,
+			cause: null,
+			relay_height: null,
+			depth,
+			same_author: null,
+			same_relay: null,
+			same_parent: null,
+			resolved: false,
+			resolved_hash: null,
+			detected_at: new Date().toISOString(),
+			resolved_at: null,
+		});
+		if (this.recentForks.length > MAX_RECENT_FORKS) {
+			this.recentForks.shift();
+		}
 
 		for (const block of blocks) {
 			if (block.author) {
@@ -116,11 +141,21 @@ export class ForkDetector {
 	 * resolves all recorded forks at or below this height,
 	 * since finalization can skip heights.
 	 */
-	onHeightFinalized(finalizedHeight) {
+	onHeightFinalized(finalizedHeight, finalizedHash) {
 		for (const [height] of this.recordedForks) {
 			if (height <= finalizedHeight) {
 				this.m.active_fork_heights.dec({ chain: this.chainName });
 				this.recordedForks.delete(height);
+
+				// mark resolved in ring buffer
+				const entry = this.recentForks.findLast(
+					f => f.chain === this.chainName && f.block_number === height
+				);
+				if (entry) {
+					entry.resolved = true;
+					entry.resolved_hash = finalizedHash;
+					entry.resolved_at = new Date().toISOString();
+				}
 			}
 		}
 	}

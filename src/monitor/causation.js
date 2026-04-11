@@ -104,6 +104,19 @@ export class ForkCausation {
 			`${sameParent ? 'same parent' : 'different parents'})`
 		);
 
+		// update in-memory ring buffer entry
+		const recentEntry = this.parachain.forkDetector.recentForks
+			.findLast(f => f.chain === this.parachain.name && f.block_number === height);
+		if (recentEntry) {
+			recentEntry.cause = cause;
+			recentEntry.relay_height = relayHeight;
+			recentEntry.same_author = sameAuthor;
+			recentEntry.same_relay = sameRelayNumber && sameRelayHash;
+			recentEntry.same_parent = sameParent;
+			recentEntry.authors = authors;
+
+		}
+
 		// update metrics
 		this.m.parachain_fork_cause_total.inc({
 			chain: this.parachain.name,

@@ -14,6 +14,7 @@ const presets = {
 		{
 			name: 'polkadot',
 			consensus: 'babe',
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'parity', url: 'wss://rpc.polkadot.io' },
 				{ name: 'dwellir', url: 'wss://polkadot-rpc.n.dwellir.com' },
@@ -95,6 +96,7 @@ const presets = {
 		{
 			name: 'kusama',
 			consensus: 'babe',
+			blockTimeMs: 6000,
 			nodes: [
 				{ name: 'parity', url: 'wss://kusama-rpc.polkadot.io' },
 				{ name: 'dwellir', url: 'wss://kusama-rpc.n.dwellir.com' },

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forkwatch</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>♊</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; font-size: 13px; }
@@ -126,11 +127,22 @@ function lagClass(lag, chain) {
   return lag > 20 ? 'bad' : lag > 10 ? 'warn' : 'good';
 }
 
-function renderChain(name, data, causes) {
+function renderChain(name, data, causes, forkCount30) {
   const lag = data.bestHeight - data.finalizedHeight;
   const connected = data.nodes.filter(n => n.connected).length;
   const total = data.nodes.length;
   const forkCount = data.activeForkedHeights.length;
+  const btMs = data.blockTimeMs;
+  const btLabel = btMs ? `${(btMs / 1000).toFixed(btMs % 1000 ? 1 : 0)}s` : '?';
+
+  // estimate fork rate: forks in last 30 events / expected blocks in that window
+  let forkRateStr = '-';
+  if (btMs && forkCount30 && forkCount30.total > 1 && forkCount30.spanMs > 0) {
+    const expectedBlocks = forkCount30.spanMs / btMs;
+    const rate = (forkCount30.total / expectedBlocks) * 100;
+    forkRateStr = `${rate.toFixed(1)}%`;
+  }
+  const rateClass = parseFloat(forkRateStr) > 30 ? 'bad' : parseFloat(forkRateStr) > 15 ? 'warn' : '';
 
   const causeEntries = Object.entries(causes);
   const causeTotal = causeEntries.reduce((s, [, v]) => s + v, 0);
@@ -150,11 +162,11 @@ function renderChain(name, data, causes) {
   }
 
   return `<div class="card">
-    <h2>${name} <span class="consensus">${data.consensus}</span></h2>
+    <h2>${name} <span class="consensus">${data.consensus}</span> <span class="consensus">${btLabel}</span></h2>
     <div class="stats">
       <div class="stat"><div class="label">best</div><div class="value">${data.bestHeight.toLocaleString()}</div></div>
       <div class="stat"><div class="label">finality lag</div><div class="value ${lagClass(lag, name)}">${lag}</div></div>
-      <div class="stat"><div class="label">active forks</div><div class="value ${forkCount > 15 ? 'warn' : ''}">${forkCount}</div></div>
+      <div class="stat"><div class="label">fork rate</div><div class="value ${rateClass}">${forkRateStr}</div></div>
     </div>
     <div class="nodes">${data.nodes.map(n =>
       `<span class="node"><span class="dot ${n.connected ? 'up' : 'down'}"></span>${n.name}</span>`
@@ -216,7 +228,7 @@ async function update() {
   try {
     const [status, forks] = await Promise.all([
       fetch('/api/status').then(r => r.json()),
-      fetch('/api/forks?limit=30').then(r => r.json()),
+      fetch('/api/forks?limit=100').then(r => r.json()),
     ]);
 
     document.getElementById('db').textContent = status.database ? 'db connected' : 'no db';
@@ -225,15 +237,24 @@ async function update() {
     document.getElementById('refresh').textContent = `updated ${new Date().toLocaleTimeString()}`;
 
     const causesByChain = {};
+    const forkStatsByChain = {};
+    const uptimeMs = status.uptime * 1000;
     forks.forEach(f => {
       if (!causesByChain[f.chain]) causesByChain[f.chain] = {};
       const cause = f.cause || 'pending';
       causesByChain[f.chain][cause] = (causesByChain[f.chain][cause] || 0) + 1;
+
+      if (!forkStatsByChain[f.chain]) forkStatsByChain[f.chain] = { total: 0 };
+      forkStatsByChain[f.chain].total++;
     });
+    // use uptime as the window for fork rate
+    for (const s of Object.values(forkStatsByChain)) {
+      s.spanMs = uptimeMs;
+    }
 
     const chainNames = Object.keys(status).filter(k => !['database', 'uptime'].includes(k));
     document.getElementById('chains').innerHTML = chainNames.map(name =>
-      renderChain(name, status[name], causesByChain[name] || {})
+      renderChain(name, status[name], causesByChain[name] || {}, forkStatsByChain[name] || {})
     ).join('');
 
     document.getElementById('forks').innerHTML = forks.map(renderFork).join('');
@@ -243,7 +264,7 @@ async function update() {
 }
 
 update();
-setInterval(update, 5000);
+setInterval(update, 1000);
 </script>
 </body>
 </html>

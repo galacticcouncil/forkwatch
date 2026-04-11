@@ -24,6 +24,8 @@ export class ChainContext {
 		this.authorExtractor = new AuthorExtractor();
 		/** @type {NodeConnection[]} */
 		this.connections = [];
+		/** @type {number|null} target block time in milliseconds */
+		this.blockTimeMs = chainConfig.blockTimeMs || null;
 	}
 
 	/**
@@ -238,6 +240,7 @@ export class ChainContext {
 		return {
 			name: this.name,
 			consensus: this.consensus,
+			blockTimeMs: this.blockTimeMs,
 			bestHeight: this.blockTree.bestHeight,
 			finalizedHeight: this.blockTree.finalizedHeight,
 			activeForkedHeights: this.blockTree.getForkedHeights(),

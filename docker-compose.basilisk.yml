@@ -13,7 +13,7 @@ services:
       driver: json-file
     deploy:
       labels:
-        traefik.http.routers.forkwatch-basilisk.rule: Host(`frokwatch-basilisk.play.hydration.cloud`)
+        traefik.http.routers.forkwatch-basilisk.rule: Host(`frokwatch.play.hydration.cloud`)
         traefik.http.routers.forkwatch-basilisk.tls: 'true'
         traefik.http.routers.forkwatch-basilisk.tls.certresolver: myresolver
         traefik.http.services.forkwatch-basilisk.loadbalancer.server.port: '3001'

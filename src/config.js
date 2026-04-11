@@ -4,8 +4,6 @@ dotenv.config();
 export const port = Number(process.env.PORT) || 3001;
 export const timeout = Number(process.env.TIMEOUT) || 120;
 export const pruneAfter = Number(process.env.PRUNE_FINALIZED_AFTER) || 50;
-export const forkDepthAlertThreshold = Number(process.env.FORK_DEPTH_ALERT_THRESHOLD) || 3;
-export const finalityLagAlertThreshold = Number(process.env.FINALITY_LAG_ALERT_THRESHOLD) || 30;
 export const retentionDays = Number(process.env.RETENTION_DAYS) || 90;
 export const forkEventRetentionDays = Number(process.env.FORK_EVENT_RETENTION_DAYS) || 365;
 export const finalityLogInterval = Number(process.env.FINALITY_LOG_INTERVAL) || 60; // seconds

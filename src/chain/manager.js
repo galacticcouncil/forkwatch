@@ -281,14 +281,22 @@ export class ChainManager {
 
 	setupCausation() {
 		for (const [name, ctx] of this.chains) {
-			const relayChains = Array.from(this.chains.values())
-				.filter(c => c.consensus === 'babe' && c.name !== name);
+			if (ctx.consensus !== 'aura') continue;
 
-			if (ctx.consensus === 'aura' && relayChains.length > 0) {
-				const causation = new ForkCausation(ctx, relayChains[0], this.m);
+			// find relay chain: explicit config or fall back to first babe chain
+			let relayCtx = null;
+			if (ctx.relay) {
+				relayCtx = this.chains.get(ctx.relay);
+			} else {
+				relayCtx = Array.from(this.chains.values())
+					.find(c => c.consensus === 'babe' && c.name !== name);
+			}
+
+			if (relayCtx) {
+				const causation = new ForkCausation(ctx, relayCtx, this.m);
 				ctx.causation = causation;
 				console.log(
-					`[${name}] causation attribution enabled against relay chain '${relayChains[0].name}'`
+					`[${name}] causation attribution enabled against relay chain '${relayCtx.name}'`
 				);
 			}
 		}

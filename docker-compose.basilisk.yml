@@ -1,0 +1,43 @@
+version: '3.3'
+services:
+  app:
+    image: galacticcouncil/forkwatch:latest
+    environment:
+      DATABASE_URL: postgresql://forkwatch:password@db:5432/forkwatch
+      PRESET: basilisk
+      PORT: '3001'
+    networks:
+      - net
+      - gateway
+    logging:
+      driver: json-file
+    deploy:
+      labels:
+        traefik.http.routers.forkwatch-basilisk.rule: Host(`frokwatch-basilisk.play.hydration.cloud`)
+        traefik.http.routers.forkwatch-basilisk.tls: 'true'
+        traefik.http.routers.forkwatch-basilisk.tls.certresolver: myresolver
+        traefik.http.services.forkwatch-basilisk.loadbalancer.server.port: '3001'
+        swarmpit.service.deployment.autoredeploy: 'true'
+      update_config:
+        delay: 10s
+        order: start-first
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: forkwatch
+      POSTGRES_PASSWORD: password
+      POSTGRES_USER: forkwatch
+    volumes:
+      - data:/var/lib/postgresql/data
+    networks:
+      - net
+    logging:
+      driver: json-file
+networks:
+  gateway:
+    external: true
+  net:
+    driver: overlay
+volumes:
+  data:
+    driver: local

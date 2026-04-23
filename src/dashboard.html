@@ -15,7 +15,11 @@ body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; backgrou
 .db.on { background: #1b4332; color: #3fb950; }
 .db.off { background: #3d1f1f; color: #f85149; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; padding: 16px 24px; }
-.card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; }
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; cursor: pointer; transition: border-color 0.15s; }
+.card:hover { border-color: #484f58; }
+.card.selected { border-color: #58a6ff; }
+#filter-info { font-size: 11px; font-weight: 400; color: #7d8590; margin-left: 8px; cursor: pointer; }
+#filter-info:hover { color: #58a6ff; }
 .card h2 { font-size: 13px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .card h2 .consensus { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #21262d; color: #7d8590; font-weight: 400; }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
@@ -69,7 +73,7 @@ tr:hover td { background: #161b22; }
 </div>
 <div class="grid" id="chains"></div>
 <div class="forks-section">
-  <h2>recent forks</h2>
+  <h2>recent forks <span id="filter-info"></span></h2>
   <table>
     <thead><tr><th>chain</th><th>height</th><th>authors</th><th>cause</th><th>depth</th><th>resolved</th><th>time</th></tr></thead>
     <tbody id="forks"></tbody>
@@ -77,6 +81,12 @@ tr:hover td { background: #161b22; }
 </div>
 
 <script>
+let selectedChain = null;
+function toggleFilter(chain) {
+  selectedChain = selectedChain === chain ? null : chain;
+  update();
+}
+
 const CAUSE_COLORS = {
   relay_fork: 'relay',
   relay_fork_same_author: 'relay-same',
@@ -134,12 +144,14 @@ function renderChain(name, data, causes, uptimeS) {
   const btMs = data.blockTimeMs;
   const btLabel = btMs ? `${(btMs / 1000).toFixed(btMs % 1000 ? 1 : 0)}s` : '?';
 
-  // fork rate: total forks from ring buffer / expected blocks in uptime
+  // fork rate: forks in last hour / expected blocks in last hour
   let forkRateStr = '-';
-  const forkCount = data.forkCount || 0;
-  if (btMs && uptimeS > 10 && forkCount > 0) {
-    const expectedBlocks = (uptimeS * 1000) / btMs;
-    const rate = (forkCount / expectedBlocks) * 100;
+  const forksLastHour = data.forksLastHour || 0;
+  // use shorter window if uptime is less than 1 hour
+  const windowMs = Math.min(uptimeS * 1000, 3600000);
+  if (btMs && windowMs > 60000 && forksLastHour > 0) {
+    const expectedBlocks = windowMs / btMs;
+    const rate = (forksLastHour / expectedBlocks) * 100;
     forkRateStr = `${rate.toFixed(1)}%`;
   }
   const rateClass = parseFloat(forkRateStr) > 30 ? 'bad' : parseFloat(forkRateStr) > 15 ? 'warn' : '';
@@ -161,7 +173,8 @@ function renderChain(name, data, causes, uptimeS) {
     }).join('') + '</div>';
   }
 
-  return `<div class="card">
+  const selected = selectedChain === name ? ' selected' : '';
+  return `<div class="card${selected}" onclick="toggleFilter('${name}')">
     <h2>${name} <span class="consensus">${data.consensus}</span> <span class="consensus">${btLabel}</span></h2>
     <div class="stats">
       <div class="stat"><div class="label">best</div><div class="value">${data.bestHeight.toLocaleString()}</div></div>
@@ -228,7 +241,7 @@ async function update() {
   try {
     const [status, forks] = await Promise.all([
       fetch('/api/status').then(r => r.json()),
-      fetch('/api/forks?limit=100').then(r => r.json()),
+      fetch(selectedChain ? `/api/forks/${selectedChain}?limit=100` : '/api/forks?limit=100').then(r => r.json()),
     ]);
 
     document.getElementById('db').textContent = status.database ? 'db connected' : 'no db';
@@ -248,7 +261,11 @@ async function update() {
       renderChain(name, status[name], causesByChain[name] || {}, status.uptime)
     ).join('');
 
-    document.getElementById('forks').innerHTML = forks.map(renderFork).join('');
+    const filtered = selectedChain ? forks.filter(f => f.chain === selectedChain) : forks;
+    document.getElementById('forks').innerHTML = filtered.map(renderFork).join('');
+    document.getElementById('filter-info').innerHTML = selectedChain
+      ? `— ${selectedChain} only <span onclick="toggleFilter('${selectedChain}')" style="text-decoration:underline">clear</span>`
+      : '';
   } catch (e) {
     document.getElementById('refresh').textContent = `error: ${e.message}`;
   }

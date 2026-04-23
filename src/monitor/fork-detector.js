@@ -1,6 +1,6 @@
 import { insertForkBlock, insertForkEvent } from '../db/queries.js';
 
-const MAX_RECENT_FORKS = 200;
+const MAX_RECENT_FORKS = 5000;
 
 export class ForkDetector {
 	constructor(blockTree, m, chainName) {
@@ -13,6 +13,21 @@ export class ForkDetector {
 		this.recentForks = [];
 		/** @type {number} total fork count since startup */
 		this.totalForkCount = 0;
+	}
+
+	/**
+	 * count forks detected within the last N milliseconds
+	 */
+	countForksSince(windowMs) {
+		const cutoff = Date.now() - windowMs;
+		let count = 0;
+		// iterate from end (newest first) and stop when older than cutoff
+		for (let i = this.recentForks.length - 1; i >= 0; i--) {
+			const t = new Date(this.recentForks[i].detected_at).getTime();
+			if (t < cutoff) break;
+			count++;
+		}
+		return count;
 	}
 
 	/**

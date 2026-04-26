@@ -4,6 +4,7 @@ import { ForkDetector } from '../monitor/fork-detector.js';
 import { FinalityTracker } from '../monitor/finality-tracker.js';
 import { AuthorExtractor } from '../monitor/author-extractor.js';
 import { ForkCausation } from '../monitor/causation.js';
+import { SlotTracker } from '../monitor/slot-tracker.js';
 import { resolveForkEvent } from '../db/queries.js';
 import { db, dbEnabled } from '../db/index.js';
 import { pruneAfter, timeout } from '../config.js';
@@ -22,6 +23,9 @@ export class ChainContext {
 		this.forkDetector = new ForkDetector(this.blockTree, m, this.name);
 		this.finalityTracker = new FinalityTracker(this.name, m);
 		this.authorExtractor = new AuthorExtractor();
+		this.slotTracker = this.consensus === 'aura'
+			? new SlotTracker(this.name, m, addr => this.resolveAuthorName(addr))
+			: null;
 		/** @type {NodeConnection[]} */
 		this.connections = [];
 		/** @type {number|null} target block time in milliseconds */
@@ -123,6 +127,29 @@ export class ChainContext {
 		await Promise.all(this.nodeConfigs.map(nodeConfig =>
 			this.connectNode(nodeConfig)
 		));
+		await this.initSlotTracker();
+	}
+
+	async initSlotTracker() {
+		if (!this.slotTracker) return;
+		const conn = this.connections.find(c => c.connected);
+		if (!conn) return;
+		await this.refreshAuthoritiesAndIdentities(conn);
+		// refresh periodically
+		setInterval(() => {
+			const c = this.connections.find(x => x.connected);
+			if (c) this.refreshAuthoritiesAndIdentities(c).catch(() => {});
+		}, 10 * 60 * 1000);
+	}
+
+	async refreshAuthoritiesAndIdentities(conn) {
+		await this.slotTracker.refreshAuthorities(conn.api);
+		if (!this.slotTracker.authorities?.length) return;
+		console.log(`[${this.name}] slot tracker: ${this.slotTracker.authorities.length} authorities`);
+		// prefetch identities in parallel (bounded concurrency not needed for ~50-100 authorities)
+		for (const addr of this.slotTracker.authorities) {
+			this.resolveAuthorIdentity(conn.api, addr).catch(() => {});
+		}
 	}
 
 	async connectNode(nodeConfig) {
@@ -215,11 +242,21 @@ export class ChainContext {
 			const finalizedNumber = header.number.toNumber();
 			const finalizedHash = header.hash.toHex();
 
+			const prevFinalizedHeight = this.blockTree.finalizedHeight;
 			this.finalityTracker.onFinalizedHead(nodeName, finalizedNumber);
 			this.blockTree.finalizedHeight = Math.max(
 				this.blockTree.finalizedHeight,
 				finalizedNumber
 			);
+
+			// only drive slot tracking from the first-connected node to avoid duplicates
+			if (this.slotTracker && this.connections[0]?.nodeName === nodeName) {
+				this.slotTracker.onFinalizedHeader(
+					conn.api,
+					header,
+					prevFinalizedHeight || null
+				).catch(() => {});
+			}
 
 			// resolve fork events at finalized heights
 			this.forkDetector.onHeightFinalized(finalizedNumber, finalizedHash);
@@ -245,6 +282,14 @@ export class ChainContext {
 			finalizedHeight: this.blockTree.finalizedHeight,
 			forkCount: this.forkDetector.totalForkCount,
 			forksLastHour: this.forkDetector.countForksSince(60 * 60 * 1000),
+			missedSlots: this.slotTracker?.totalMissed || 0,
+			producedSlots: this.slotTracker?.totalProduced || 0,
+			slotHistory: this.slotTracker?.recentSlots || [],
+			lastSlot: this.slotTracker?.lastSlot ?? null,
+			lastSlotImportedAt: this.slotTracker?.lastSlotImportedAt ?? null,
+			nextExpectedAuthor: this.slotTracker?.lastSlot !== null && this.slotTracker?.lastSlot !== undefined
+				? this.slotTracker.expectedAuthor(this.slotTracker.lastSlot + 1)
+				: null,
 			activeForkedHeights: this.blockTree.getForkedHeights(),
 			nodes: this.nodeConfigs.map(nc => {
 				const conn = this.connections.find(c => c.nodeName === nc.name);

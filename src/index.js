@@ -69,6 +69,16 @@ const m = metrics.register('forkwatch', {
 		help: 'parachain forks attributed to relay chain forks',
 		labels: ['chain', 'relay_chain'],
 	},
+	collator_missed_slots_total: {
+		type: 'counter',
+		help: 'aura slots missed by a collator (expected author did not produce)',
+		labels: ['chain', 'collator'],
+	},
+	collator_produced_slots_total: {
+		type: 'counter',
+		help: 'aura slots produced by a collator on the finalized chain',
+		labels: ['chain', 'collator'],
+	},
 });
 
 let chainManager;

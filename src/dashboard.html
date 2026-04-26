@@ -62,6 +62,10 @@ tr:hover td { background: #161b22; }
 .tag-double-timing { background: #1c2028; color: #6e7681; }
 .tag-double-reorg { background: #0e2a52; color: #316dca; }
 .refresh { color: #7d8590; font-size: 11px; }
+.slot-panel { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; }
+.slot-panel h3 { font-size: 12px; font-weight: 600; color: #f0f6fc; margin-bottom: 8px; }
+.next-slot { padding: 8px 10px; background: #0d1117; border-radius: 6px; margin-bottom: 10px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+.countdown { color: #58a6ff; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -72,8 +76,9 @@ tr:hover td { background: #161b22; }
   <span class="refresh" id="refresh"></span>
 </div>
 <div class="grid" id="chains"></div>
-<div class="forks-section">
-  <h2>recent forks <span id="filter-info"></span></h2>
+<div class="forks-section" style="padding: 16px 24px">
+  <div style="font-size: 11px; color: #7d8590; margin-bottom: 8px" id="filter-info"></div>
+  <div id="slot-panel"></div>
   <table>
     <thead><tr><th>chain</th><th>height</th><th>authors</th><th>cause</th><th>depth</th><th>resolved</th><th>time</th></tr></thead>
     <tbody id="forks"></tbody>
@@ -181,12 +186,88 @@ function renderChain(name, data, causes, uptimeS) {
       <div class="stat"><div class="label">finality lag</div><div class="value ${lagClass(lag, name)}">${lag}</div></div>
       <div class="stat"><div class="label">fork rate</div><div class="value ${rateClass}">${forkRateStr}</div></div>
     </div>
+    ${renderMissRate(data)}
     <div class="nodes">${data.nodes.map(n =>
       `<span class="node"><span class="dot ${n.connected ? 'up' : 'down'}"></span>${n.name}</span>`
     ).join('')}</div>
     ${causeBar ? `<div class="causes">${causeBar}${causeLegend}</div>` : ''}
   </div>`;
 }
+
+function renderMissRate(data) {
+  const missed = data.missedSlots || 0;
+  const produced = data.producedSlots || 0;
+  const total = missed + produced;
+  if (total === 0) return '';
+  const rate = (missed / total * 100).toFixed(1);
+  const color = rate > 10 ? '#f85149' : rate > 5 ? '#d29922' : '#3fb950';
+  return `<div style="margin-top:8px;font-size:11px;color:#7d8590">
+    missed slots: <span style="color:${color}">${rate}%</span>
+    <span style="color:#6e7681">(${missed}/${total})</span>
+  </div>`;
+}
+
+function renderSlotPanel(chainName, data) {
+  if (!data || data.consensus !== 'aura') return '';
+  if (!data.slotHistory?.length && !data.nextExpectedAuthor) return '';
+
+  const history = data.slotHistory.slice().reverse();
+  const rows = history.slice(0, 10).map(h => {
+    const status = h.produced
+      ? `<span style="color:#3fb950">✓ produced</span>`
+      : `<span style="color:#f85149">✗ missed</span>`;
+    const name = h.expected ? authorSpan(h.expected) : '<span style="color:#6e7681">?</span>';
+    const block = h.block
+      ? `<span style="color:#58a6ff">#${h.block.toLocaleString()}</span>`
+      : `<span style="color:#6e7681">—</span>`;
+    return `<tr>
+      <td style="color:#6e7681;font-size:10px;padding:3px 8px">${h.slot}</td>
+      <td style="padding:3px 8px">${block}</td>
+      <td style="padding:3px 8px">${name}</td>
+      <td style="text-align:right;padding:3px 8px">${status}</td>
+    </tr>`;
+  }).join('');
+
+  // countdown data attributes -- updated by a tick interval
+  const next = data.nextExpectedAuthor
+    ? `<div class="next-slot">
+        <span>next expected: ${authorSpan(data.nextExpectedAuthor)}</span>
+        <span class="countdown" data-last-ts="${data.lastSlotImportedAt || 0}" data-block-time="${data.blockTimeMs || 0}">—</span>
+      </div>`
+    : '';
+
+  return `<div class="slot-panel">
+    <h3>slot schedule · ${chainName}</h3>
+    ${next}
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:#7d8590;font-size:10px;border-bottom:1px solid #21262d">
+        <th style="text-align:left;padding:4px 8px">slot</th>
+        <th style="text-align:left;padding:4px 8px">block</th>
+        <th style="text-align:left;padding:4px 8px">expected</th>
+        <th style="text-align:right;padding:4px 8px">status</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function tickCountdowns() {
+  for (const el of document.querySelectorAll('.countdown')) {
+    const lastTs = Number(el.dataset.lastTs);
+    const bt = Number(el.dataset.blockTime);
+    if (!lastTs || !bt) { el.textContent = '—'; continue; }
+    const next = lastTs + bt;
+    const remaining = next - Date.now();
+    if (remaining > 0) {
+      el.textContent = `${(remaining / 1000).toFixed(1)}s`;
+      el.style.color = '#58a6ff';
+    } else {
+      el.textContent = `+${Math.abs(remaining / 1000).toFixed(1)}s late`;
+      el.style.color = '#d29922';
+    }
+  }
+}
+setInterval(tickCountdowns, 100);
 
 const AUTHOR_HUES = [
   210, 150, 30, 330, 270, 60, 180, 120, 300, 0, 240, 90, 345, 195, 45,
@@ -264,7 +345,12 @@ async function update() {
     const filtered = selectedChain ? forks.filter(f => f.chain === selectedChain) : forks;
     document.getElementById('forks').innerHTML = filtered.map(renderFork).join('');
     document.getElementById('filter-info').innerHTML = selectedChain
-      ? `— ${selectedChain} only <span onclick="toggleFilter('${selectedChain}')" style="text-decoration:underline">clear</span>`
+      ? `${selectedChain} only · <span onclick="toggleFilter('${selectedChain}')" style="text-decoration:underline;cursor:pointer">clear</span>`
+      : '';
+
+    // slot schedule only when a specific chain is filtered
+    document.getElementById('slot-panel').innerHTML = selectedChain
+      ? renderSlotPanel(selectedChain, status[selectedChain])
       : '';
   } catch (e) {
     document.getElementById('refresh').textContent = `error: ${e.message}`;

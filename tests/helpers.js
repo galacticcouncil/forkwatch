@@ -18,6 +18,8 @@ export function createMockMetrics() {
 		blocks_imported_total: metric(),
 		parachain_fork_cause_total: metric(),
 		parachain_forks_relay_caused_total: metric(),
+		collator_missed_slots_total: metric(),
+		collator_produced_slots_total: metric(),
 	};
 }
 

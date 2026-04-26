@@ -285,6 +285,7 @@ export class ChainContext {
 			missedSlots: this.slotTracker?.totalMissed || 0,
 			producedSlots: this.slotTracker?.totalProduced || 0,
 			slotHistory: this.slotTracker?.recentSlots || [],
+			missedCombos: this.slotTracker?.missedCombos || [],
 			lastSlot: this.slotTracker?.lastSlot ?? null,
 			lastSlotImportedAt: this.slotTracker?.lastSlotImportedAt ?? null,
 			nextExpectedAuthor: this.slotTracker?.lastSlot !== null && this.slotTracker?.lastSlot !== undefined

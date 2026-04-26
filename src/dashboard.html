@@ -79,6 +79,9 @@ tr:hover td { background: #161b22; }
 <div class="forks-section" style="padding: 16px 24px">
   <div style="font-size: 11px; color: #7d8590; margin-bottom: 8px" id="filter-info"></div>
   <div id="slot-panel"></div>
+  <div id="missed-combos"></div>
+  <div id="fork-combos"></div>
+  <h3 style="font-size: 13px; font-weight: 600; color: #f0f6fc; margin: 12px 0 8px">recent forks</h3>
   <table>
     <thead><tr><th>chain</th><th>height</th><th>authors</th><th>cause</th><th>depth</th><th>resolved</th><th>time</th></tr></thead>
     <tbody id="forks"></tbody>
@@ -204,6 +207,152 @@ function renderMissRate(data) {
   return `<div style="margin-top:8px;font-size:11px;color:#7d8590">
     missed slots: <span style="color:${color}">${rate}%</span>
     <span style="color:#6e7681">(${missed}/${total})</span>
+  </div>`;
+}
+
+function renderMissedCombos(status, chainName) {
+  // collect missed combos from one or all chains
+  const all = [];
+  const chains = chainName ? [chainName] : Object.keys(status).filter(k => !['database', 'uptime'].includes(k));
+  for (const name of chains) {
+    const combos = status[name]?.missedCombos || [];
+    for (const c of combos) all.push({ ...c, chain: name });
+  }
+  if (all.length === 0) return '';
+
+  // stats
+  const lengths = all.map(c => c.length);
+  const total = all.length;
+  const avg = (lengths.reduce((a, b) => a + b, 0) / total).toFixed(1);
+  const max = Math.max(...lengths);
+
+  // top by length
+  const top = [...all].sort((a, b) => b.length - a.length).slice(0, 15);
+  const rows = top.map(c => {
+    const collators = c.collators.map(authorSpan).join(' ');
+    const lenColor = c.length >= 5 ? '#f85149' : c.length >= 3 ? '#d29922' : '#3fb950';
+    return `<tr>
+      <td style="padding:3px 8px">${c.chain}</td>
+      <td style="padding:3px 8px;color:#6e7681;font-size:10px">${c.startSlot}</td>
+      <td style="padding:3px 8px"><span style="color:${lenColor};font-weight:600">${c.length}</span></td>
+      <td style="padding:3px 8px">${collators}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div style="background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 16px;margin-bottom:16px">
+    <h3 style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:10px">missed slot combos <span style="color:#7d8590;font-weight:400">(consecutive missed slots)</span></h3>
+    <div style="display:flex;gap:16px;font-size:11px;color:#7d8590;margin-bottom:10px;flex-wrap:wrap">
+      <div>combos: <span style="color:#f0f6fc">${total}</span></div>
+      <div>avg length: <span style="color:#f0f6fc">${avg}</span></div>
+      <div>max: <span style="color:${max >= 5 ? '#f85149' : '#d29922'}">${max}</span></div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:#7d8590;font-size:10px;border-bottom:1px solid #21262d">
+        <th style="text-align:left;padding:4px 8px">chain</th>
+        <th style="text-align:left;padding:4px 8px">start slot</th>
+        <th style="text-align:left;padding:4px 8px">length</th>
+        <th style="text-align:left;padding:4px 8px">collators (in order)</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderForkCombos(forks) {
+  // group consecutive forks (adjacent block_number, same chain)
+  const sorted = [...forks].sort((a, b) => {
+    if (a.chain !== b.chain) return a.chain.localeCompare(b.chain);
+    return Number(a.block_number) - Number(b.block_number);
+  });
+
+  const chains = [];
+  let cur = null;
+  for (const f of sorted) {
+    const bn = Number(f.block_number);
+    if (cur && cur.chain === f.chain && bn === cur.end + 1) {
+      cur.end = bn;
+      cur.forks.push(f);
+    } else {
+      if (cur && cur.forks.length >= 2) chains.push(cur);
+      cur = { chain: f.chain, start: bn, end: bn, forks: [f] };
+    }
+  }
+  if (cur && cur.forks.length >= 2) chains.push(cur);
+
+  if (chains.length === 0) return '';
+
+  // sort by length descending, take top 20
+  chains.sort((a, b) => b.forks.length - a.forks.length);
+  const top = chains.slice(0, 20);
+
+  // stats
+  const lengths = chains.map(c => c.forks.length);
+  const total = chains.length;
+  const avg = (lengths.reduce((a, b) => a + b, 0) / total).toFixed(1);
+  const max = Math.max(...lengths);
+  const dist = { 2: 0, 3: 0, 4: 0, '5+': 0 };
+  for (const l of lengths) {
+    if (l === 2) dist[2]++;
+    else if (l === 3) dist[3]++;
+    else if (l === 4) dist[4]++;
+    else dist['5+']++;
+  }
+
+  // count starter and participant collators
+  const starter = new Map();
+  const participant = new Map();
+  for (const c of chains) {
+    const first = c.forks[0];
+    for (const a of (first.authors || [])) {
+      starter.set(a, (starter.get(a) || 0) + 1);
+    }
+    for (const f of c.forks) {
+      for (const a of (f.authors || [])) {
+        participant.set(a, (participant.get(a) || 0) + 1);
+      }
+    }
+  }
+  const topStarters = [...starter.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  const rows = top.map(c => {
+    const last = c.forks[c.forks.length - 1];
+    const allAuthors = new Set();
+    for (const f of c.forks) for (const a of (f.authors || [])) allAuthors.add(a);
+    const authorList = [...allAuthors].slice(0, 4).map(authorSpan).join(' ');
+    const more = allAuthors.size > 4 ? ` <span style="color:#6e7681">+${allAuthors.size - 4}</span>` : '';
+    const lenColor = c.forks.length >= 5 ? '#f85149' : c.forks.length >= 3 ? '#d29922' : '#3fb950';
+    return `<tr>
+      <td style="padding:3px 8px">${c.chain}</td>
+      <td style="padding:3px 8px;color:#58a6ff">#${c.start.toLocaleString()}</td>
+      <td style="padding:3px 8px"><span style="color:${lenColor};font-weight:600">${c.forks.length}</span></td>
+      <td style="padding:3px 8px">${authorList}${more}</td>
+      <td style="padding:3px 8px;color:#7d8590">${timeAgo(last.detected_at)}</td>
+    </tr>`;
+  }).join('');
+
+  const startersHtml = topStarters.map(([a, c]) =>
+    `<span style="margin-right:10px">${authorSpan(a)} <span style="color:#7d8590">${c}×</span></span>`
+  ).join('');
+
+  return `<div style="background:#161b22;border:1px solid #21262d;border-radius:8px;padding:12px 16px;margin-bottom:16px">
+    <h3 style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:10px">fork combos <span style="color:#7d8590;font-weight:400">(consecutive forked blocks)</span></h3>
+    <div style="display:flex;gap:16px;font-size:11px;color:#7d8590;margin-bottom:10px;flex-wrap:wrap">
+      <div>fork combos: <span style="color:#f0f6fc">${total}</span></div>
+      <div>avg length: <span style="color:#f0f6fc">${avg}</span></div>
+      <div>max: <span style="color:${max >= 5 ? '#f85149' : '#d29922'}">${max}</span></div>
+      <div>by length: <span style="color:#3fb950">2:${dist[2]}</span> <span style="color:#d29922">3:${dist[3]}</span> <span style="color:#d29922">4:${dist[4]}</span> <span style="color:#f85149">5+:${dist['5+']}</span></div>
+    </div>
+    ${startersHtml ? `<div style="font-size:11px;color:#7d8590;margin-bottom:10px">top combo starters: ${startersHtml}</div>` : ''}
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:#7d8590;font-size:10px;border-bottom:1px solid #21262d">
+        <th style="text-align:left;padding:4px 8px">chain</th>
+        <th style="text-align:left;padding:4px 8px">start</th>
+        <th style="text-align:left;padding:4px 8px">length</th>
+        <th style="text-align:left;padding:4px 8px">collators</th>
+        <th style="text-align:left;padding:4px 8px">time</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
   </div>`;
 }
 
@@ -352,6 +501,9 @@ async function update() {
     document.getElementById('slot-panel').innerHTML = selectedChain
       ? renderSlotPanel(selectedChain, status[selectedChain])
       : '';
+
+    document.getElementById('missed-combos').innerHTML = renderMissedCombos(status, selectedChain);
+    document.getElementById('fork-combos').innerHTML = renderForkCombos(filtered);
   } catch (e) {
     document.getElementById('refresh').textContent = `error: ${e.message}`;
   }

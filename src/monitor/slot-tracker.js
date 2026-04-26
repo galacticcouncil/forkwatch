@@ -28,6 +28,10 @@ export class SlotTracker {
 		this._queue = Promise.resolve();
 		/** @type {number|null} highest block number we've processed for slot tracking */
 		this.lastProcessedBlock = null;
+		/** @type {Array<{startSlot, length, collators: string[]}>} recent missed slot combos */
+		this.missedCombos = [];
+		/** @type {{startSlot, collators: string[]}|null} current open run */
+		this._openMiss = null;
 	}
 
 	addHistory(entry) {
@@ -120,26 +124,39 @@ export class SlotTracker {
 	 * process a single finalized block's slot.
 	 * use processRange() when finalization jumps multiple blocks.
 	 */
-	processSlot(slot, blockNumber = null) {
-		// guard: skip out-of-order or duplicate slots
-		if (this.lastSlot !== null && slot <= this.lastSlot) return;
-
-		if (this.lastSlot !== null && slot > this.lastSlot + 1) {
-			// genuine gap -- attribute each missed slot to its expected author
-			for (let s = this.lastSlot + 1; s < slot; s++) {
-				const expected = this.expectedAuthor(s);
-				if (expected) {
-					this.m.collator_missed_slots_total.inc({
-						chain: this.chainName,
-						collator: expected,
-					});
-				}
-				this.addHistory({ slot: s, expected, produced: false, block: null });
-			}
-			this.totalMissed += slot - this.lastSlot - 1;
+	recordMiss(slot, expected) {
+		if (expected) {
+			this.m.collator_missed_slots_total.inc({
+				chain: this.chainName,
+				collator: expected,
+			});
 		}
+		this.addHistory({ slot, expected, produced: false, block: null });
+		this.totalMissed++;
+		// extend or open a missed-slot combo
+		if (this._openMiss && slot === this._openMiss.startSlot + this._openMiss.collators.length) {
+			this._openMiss.collators.push(expected || 'unknown');
+		} else {
+			this._closeOpenMiss();
+			this._openMiss = { startSlot: slot, collators: [expected || 'unknown'] };
+		}
+	}
 
-		const expected = this.expectedAuthor(slot);
+	_closeOpenMiss() {
+		if (this._openMiss && this._openMiss.collators.length >= 2) {
+			this.missedCombos.push({
+				startSlot: this._openMiss.startSlot,
+				length: this._openMiss.collators.length,
+				collators: this._openMiss.collators,
+				detectedAt: new Date().toISOString(),
+			});
+			if (this.missedCombos.length > 100) this.missedCombos.shift();
+		}
+		this._openMiss = null;
+	}
+
+	recordProduce(slot, expected, blockNumber) {
+		this._closeOpenMiss();
 		if (expected) {
 			this.m.collator_produced_slots_total.inc({
 				chain: this.chainName,
@@ -148,9 +165,19 @@ export class SlotTracker {
 		}
 		this.addHistory({ slot, expected, produced: true, block: blockNumber });
 		this.totalProduced++;
-
 		this.lastSlot = slot;
 		this.lastSlotImportedAt = Date.now();
+	}
+
+	processSlot(slot, blockNumber = null) {
+		if (this.lastSlot !== null && slot <= this.lastSlot) return;
+
+		if (this.lastSlot !== null && slot > this.lastSlot + 1) {
+			for (let s = this.lastSlot + 1; s < slot; s++) {
+				this.recordMiss(s, this.expectedAuthor(s));
+			}
+		}
+		this.recordProduce(slot, this.expectedAuthor(slot), blockNumber);
 	}
 
 	/**
@@ -199,42 +226,23 @@ export class SlotTracker {
 	 * this corrects for cases where our authorities[slot % N] mapping is wrong.
 	 */
 	async processSlotWithActual(api, slot, blockNumber, blockHash) {
-		// guard: skip duplicates/out-of-order
 		if (this.lastSlot !== null && slot <= this.lastSlot) return;
 
-		// attribute missed slots to expected (best effort from mapping)
+		// attribute missed slots
 		if (this.lastSlot !== null && slot > this.lastSlot + 1) {
 			for (let s = this.lastSlot + 1; s < slot; s++) {
-				const expected = this.expectedAuthor(s);
-				if (expected) {
-					this.m.collator_missed_slots_total.inc({
-						chain: this.chainName,
-						collator: expected,
-					});
-				}
-				this.addHistory({ slot: s, expected, produced: false, block: null });
+				this.recordMiss(s, this.expectedAuthor(s));
 			}
-			this.totalMissed += slot - this.lastSlot - 1;
 		}
 
-		// use actual author for produced slot
+		// resolve actual block author
 		let actual = null;
 		try {
 			const derived = await api.derive.chain.getHeader(blockHash);
 			if (derived?.author) actual = derived.author.toString();
 		} catch (e) {}
 
-		const displayName = this.resolveAuthorName(actual) || actual || this.expectedAuthor(slot);
-		if (actual) {
-			this.m.collator_produced_slots_total.inc({
-				chain: this.chainName,
-				collator: this.resolveAuthorName(actual) || actual,
-			});
-		}
-		this.addHistory({ slot, expected: displayName, produced: true, block: blockNumber });
-		this.totalProduced++;
-
-		this.lastSlot = slot;
-		this.lastSlotImportedAt = Date.now();
+		const displayName = (actual && this.resolveAuthorName(actual)) || actual || this.expectedAuthor(slot);
+		this.recordProduce(slot, displayName, blockNumber);
 	}
 }

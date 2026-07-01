@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { endpoints } from './endpoints.js';
 import { metrics } from './metrics.js';
-import { initDb, runMigrations, closeDb } from './db/index.js';
+import { initDb, closeDb } from './db/index.js';
 import { ChainManager } from './chain/manager.js';
 import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData } from './db/queries.js';
 import { dbEnabled } from './db/index.js';
@@ -204,10 +204,6 @@ async function main() {
 	await chainManager.start();
 
 	startRetentionCleanup();
-
-	// one-time data backfills run in the background; they can be slow and must
-	// not hold up readiness.
-	runMigrations().catch(err => console.error(`migration failed: ${err.message}`));
 
 	console.log('forkwatch ready');
 }

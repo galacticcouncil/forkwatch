@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { endpoints } from './endpoints.js';
 import { metrics } from './metrics.js';
-import { initDb, closeDb } from './db/index.js';
+import { initDb, runMigrations, closeDb } from './db/index.js';
 import { ChainManager } from './chain/manager.js';
 import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData } from './db/queries.js';
 import { dbEnabled } from './db/index.js';
@@ -85,6 +85,7 @@ let chainManager;
 
 function getRecentForksFromMemory(chain, limit) {
 	const all = [];
+	if (!chainManager) return all;
 	for (const [, ctx] of chainManager.chains) {
 		all.push(...ctx.forkDetector.recentForks);
 	}
@@ -104,6 +105,9 @@ function registerApiEndpoints() {
 	endpoints.registerEndpoint('status', {
 		'/': {
 			GET: (req, res) => {
+				if (!chainManager) {
+					return res.status(503).json({ status: 'starting', database: dbEnabled() });
+				}
 				res.json({
 					database: dbEnabled(),
 					uptime: process.uptime(),
@@ -189,14 +193,21 @@ async function main() {
 
 	console.log(`monitoring ${chains.length} chain(s): ${chains.map(c => c.name).join(', ')}`);
 
-	await initDb();
+	// bind the http server first so the dashboard / health are reachable
+	// immediately, even while the db initializes and migrations run.
 	registerApiEndpoints();
 	await endpoints.start();
+
+	await initDb();
 
 	chainManager = new ChainManager(chains, m);
 	await chainManager.start();
 
 	startRetentionCleanup();
+
+	// one-time data backfills run in the background; they can be slow and must
+	// not hold up readiness.
+	runMigrations().catch(err => console.error(`migration failed: ${err.message}`));
 
 	console.log('forkwatch ready');
 }

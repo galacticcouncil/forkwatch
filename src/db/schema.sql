@@ -1,3 +1,8 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	name       TEXT PRIMARY KEY,
+	applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS fork_blocks (
 	id              BIGSERIAL PRIMARY KEY,
 	chain           TEXT NOT NULL,
@@ -45,21 +50,8 @@ ALTER TABLE fork_events ADD COLUMN IF NOT EXISTS same_relay BOOLEAN;
 ALTER TABLE fork_events ADD COLUMN IF NOT EXISTS same_parent BOOLEAN;
 ALTER TABLE fork_events ADD COLUMN IF NOT EXISTS details JSONB;
 
--- backfill same_author from fork_blocks for events that have null same_author
-UPDATE fork_events e
-SET same_author = sub.same_author,
-    same_parent = sub.same_parent
-FROM (
-  SELECT chain, block_number,
-    count(DISTINCT coalesce(author_name, author)) = 1 AS same_author,
-    count(DISTINCT parent_hash) = 1 AS same_parent
-  FROM fork_blocks
-  GROUP BY chain, block_number
-  HAVING count(*) > 1
-) sub
-WHERE e.chain = sub.chain
-  AND e.block_number = sub.block_number
-  AND e.same_author IS NULL;
+-- note: the one-time same_author/same_parent backfill lives in runMigrations()
+-- (db/index.js), guarded by schema_migrations so it never blocks boot again.
 
 CREATE INDEX IF NOT EXISTS idx_fork_events_chain ON fork_events (chain, detected_at);
 CREATE INDEX IF NOT EXISTS idx_fork_events_cause ON fork_events (chain, cause);

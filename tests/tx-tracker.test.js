@@ -23,6 +23,10 @@ function fakeApi(getBlockExtrinsics = () => []) {
 	};
 }
 
+function fakeConn(api, nodeName = 'node-1') {
+	return { api, nodeName, connected: true };
+}
+
 function substrateTx(overrides = {}) {
 	return {
 		kind: 'substrate', signer: 'alice', nonce: 5, hash: '0xaaa',
@@ -61,30 +65,32 @@ describe('TxTracker', () => {
 	describe('mempool drop detection', () => {
 		test('a cleanly included tx never becomes a problem row', async () => {
 			const api = fakeApi();
+			const conn = fakeConn(api);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
-			await tracker.pollPendingPool(api); // seen pending
+			await tracker.pollPendingPool(conn); // seen pending
 
 			// included before it ever leaves the pool
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
 			await tracker.onNewBlock(api, '0xblock1', 101);
 
 			extractTrackedExtrinsics.mockReturnValue([]); // vanished from pool
-			await tracker.pollPendingPool(api);
-			await tracker.pollPendingPool(api);
-			await tracker.pollPendingPool(api);
+			await tracker.pollPendingPool(conn);
+			await tracker.pollPendingPool(conn);
+			await tracker.pollPendingPool(conn);
 
 			expect(insertSubmittedTx).not.toHaveBeenCalled();
 		});
 
 		test('finalizes as dropped after the max wait window with no resubmission', async () => {
 			const api = fakeApi();
+			const conn = fakeConn(api);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
-			await tracker.pollPendingPool(api); // seen pending
+			await tracker.pollPendingPool(conn); // seen pending
 
 			extractTrackedExtrinsics.mockReturnValue([]); // vanished, never resubmitted
-			for (let i = 0; i < 4; i++) await tracker.pollPendingPool(api);
+			for (let i = 0; i < 4; i++) await tracker.pollPendingPool(conn);
 
 			expect(m.tx_dropped_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
 			expect(insertSubmittedTx).toHaveBeenCalledWith(expect.objectContaining({
@@ -94,14 +100,15 @@ describe('TxTracker', () => {
 
 		test('classifies as expired instead of dropped once the mortal era has passed', async () => {
 			const api = fakeApi();
+			const conn = fakeConn(api);
 			const mortalTx = substrateTx({ era: { birth: 90, death: 95 } });
 
 			extractTrackedExtrinsics.mockReturnValueOnce([mortalTx]);
-			await tracker.pollPendingPool(api);
+			await tracker.pollPendingPool(conn);
 
 			tracker.lastKnownHeight = 200; // well past death block 95
 			extractTrackedExtrinsics.mockReturnValue([]);
-			for (let i = 0; i < 4; i++) await tracker.pollPendingPool(api);
+			for (let i = 0; i < 4; i++) await tracker.pollPendingPool(conn);
 
 			expect(m.tx_expired_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
 			expect(m.tx_dropped_total.inc).not.toHaveBeenCalled();
@@ -110,13 +117,14 @@ describe('TxTracker', () => {
 
 		test('links a mempool drop to its resubmission by (signer, nonce)', async () => {
 			const api = fakeApi();
+			const conn = fakeConn(api);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ hash: '0xaaa' })]);
-			await tracker.pollPendingPool(api); // original seen pending
+			await tracker.pollPendingPool(conn); // original seen pending
 
 			extractTrackedExtrinsics.mockReturnValue([]);
-			await tracker.pollPendingPool(api); // vanished, poll 1
-			await tracker.pollPendingPool(api); // poll 2 -- crosses dropGracePolls(2)
+			await tracker.pollPendingPool(conn); // vanished, poll 1
+			await tracker.pollPendingPool(conn); // poll 2 -- crosses dropGracePolls(2)
 
 			// resubmission gets included and finalized
 			const tree = new BlockTree('test-chain');
@@ -126,7 +134,7 @@ describe('TxTracker', () => {
 			tracker.onHeightFinalized(100, '0xblock1', tree);
 
 			extractTrackedExtrinsics.mockReturnValue([]);
-			await tracker.pollPendingPool(api); // poll 3 -- should now see the resubmission
+			await tracker.pollPendingPool(conn); // poll 3 -- should now see the resubmission
 
 			expect(m.tx_resubmitted_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
 			expect(insertSubmittedTx).toHaveBeenCalledWith(expect.objectContaining({
@@ -136,16 +144,17 @@ describe('TxTracker', () => {
 
 		test('a reappearing hash clears its missing-candidate state', async () => {
 			const api = fakeApi();
+			const conn = fakeConn(api);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
-			await tracker.pollPendingPool(api);
+			await tracker.pollPendingPool(conn);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([]);
-			await tracker.pollPendingPool(api); // vanished
+			await tracker.pollPendingPool(conn); // vanished
 			expect(tracker.missingCandidates.has('0xaaa')).toBe(true);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
-			await tracker.pollPendingPool(api); // reappeared
+			await tracker.pollPendingPool(conn); // reappeared
 			expect(tracker.missingCandidates.has('0xaaa')).toBe(false);
 		});
 	});
@@ -279,16 +288,40 @@ describe('TxTracker', () => {
 	});
 
 	describe('start', () => {
-		test('logs once and skips polling when no node exposes unsafe rpc', () => {
+		test('logs once and skips polling when no connections exist', () => {
 			jest.useFakeTimers();
 			const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
 
-			tracker.start(() => null);
+			tracker.start(() => []);
 			jest.advanceTimersByTime(tracker.pollIntervalMs * 3);
 
 			expect(logSpy).toHaveBeenCalledTimes(1);
 			logSpy.mockRestore();
 			jest.useRealTimers();
+		});
+	});
+
+	describe('pickPollableConnection', () => {
+		test('picks a connected node not yet known to reject the unsafe rpc', () => {
+			const conns = [fakeConn(fakeApi(), 'node-a'), fakeConn(fakeApi(), 'node-b')];
+			expect(tracker.pickPollableConnection(conns).nodeName).toBe('node-a');
+		});
+
+		test('skips nodes marked unsupported after a failed poll', async () => {
+			const badApi = { rpc: { author: { pendingExtrinsics: jest.fn(async () => { throw new Error('unsafe rpc rejected'); }) } } };
+			const goodApi = fakeApi();
+			const bad = fakeConn(badApi, 'node-a');
+			const good = fakeConn(goodApi, 'node-b');
+
+			extractTrackedExtrinsics.mockReturnValue([]);
+			await tracker.pollPendingPool(bad);
+
+			expect(tracker.pickPollableConnection([bad, good]).nodeName).toBe('node-b');
+		});
+
+		test('ignores disconnected nodes', () => {
+			const conns = [{ ...fakeConn(fakeApi(), 'node-a'), connected: false }, fakeConn(fakeApi(), 'node-b')];
+			expect(tracker.pickPollableConnection(conns).nodeName).toBe('node-b');
 		});
 	});
 });

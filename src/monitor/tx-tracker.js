@@ -4,6 +4,7 @@ import { insertSubmittedTx } from '../db/queries.js';
 const DROP_GRACE_POLLS = 3; // polls to wait before treating a vanished tx as a drop candidate
 const DROP_MAX_WAIT_POLLS = 20; // polls to wait for a late resubmission before finalizing dropped/expired
 const MAX_FINALIZED_HASHES = 10000; // safety cap on the double-finalize guard set
+const UNSUPPORTED_RECHECK_MS = 30 * 60 * 1000; // retry nodes marked unsupported periodically
 
 const METRIC_BY_STATUS = {
 	dropped: 'tx_dropped_total',
@@ -57,6 +58,10 @@ export class TxTracker {
 
 		/** @type {Set<string>} guards against finalizing (persisting/counting) the same hash twice */
 		this.finalizedHashes = new Set();
+
+		/** @type {Set<string>} node names that rejected author_pendingExtrinsics, probed at runtime */
+		this.unsupportedNodes = new Set();
+		this.lastUnsupportedResetAt = null;
 
 		this.pollTimer = null;
 		this.warnedNoUnsafeRpc = false;
@@ -118,15 +123,19 @@ export class TxTracker {
 	}
 
 	/**
-	 * poll the pending pool of a node known to expose author_pendingExtrinsics,
-	 * diff against the previous snapshot, and feed vanished hashes into the
-	 * shared state machine.
+	 * poll a node's pending pool, diff against the previous snapshot, and feed
+	 * vanished hashes into the shared state machine. author_pendingExtrinsics is
+	 * an unsafe RPC that many public nodes reject -- rather than requiring
+	 * per-node config, this probes at runtime: a node that rejects the call is
+	 * remembered as unsupported (see pickPollableConnection) and not retried
+	 * until the periodic recheck window passes.
 	 */
-	async pollPendingPool(api) {
+	async pollPendingPool(conn) {
 		let raw;
 		try {
-			raw = await api.rpc.author.pendingExtrinsics();
+			raw = await conn.api.rpc.author.pendingExtrinsics();
 		} catch (e) {
+			this.unsupportedNodes.add(conn.nodeName);
 			return;
 		}
 
@@ -340,21 +349,40 @@ export class TxTracker {
 	}
 
 	/**
-	 * start mempool polling. getUnsafeRpcConnection should return a connected
-	 * NodeConnection known to expose author_pendingExtrinsics, or null.
+	 * pick a connected node not already known to reject author_pendingExtrinsics.
+	 * periodically forgets past rejections so a node that starts supporting it
+	 * (config change, upgrade) or failed only transiently gets retried.
 	 */
-	start(getUnsafeRpcConnection) {
+	pickPollableConnection(connections) {
+		const now = Date.now();
+		if (this.lastUnsupportedResetAt === null) {
+			this.lastUnsupportedResetAt = now;
+		} else if (now - this.lastUnsupportedResetAt > UNSUPPORTED_RECHECK_MS) {
+			this.unsupportedNodes.clear();
+			this.lastUnsupportedResetAt = now;
+		}
+
+		return connections.find(c => c.connected && !this.unsupportedNodes.has(c.nodeName)) || null;
+	}
+
+	/**
+	 * start mempool polling. getConnections should return all NodeConnections
+	 * for the chain (connected or not) -- capability is probed at runtime, not
+	 * configured, since public RPC endpoints typically reject this unsafe call.
+	 */
+	start(getConnections) {
 		if (this.pollTimer) return;
 		this.pollTimer = setInterval(() => {
-			const conn = getUnsafeRpcConnection();
+			const conn = this.pickPollableConnection(getConnections());
 			if (!conn) {
 				if (!this.warnedNoUnsafeRpc) {
-					console.log(`[${this.chainName}] tx tracker: no node flagged unsafeRpc, mempool-drop detection disabled (reorg-loss detection is unaffected)`);
+					console.log(`[${this.chainName}] tx tracker: no node supports author_pendingExtrinsics, mempool-drop detection disabled (reorg-loss detection is unaffected)`);
 					this.warnedNoUnsafeRpc = true;
 				}
 				return;
 			}
-			this.pollPendingPool(conn.api).catch(() => {});
+			this.warnedNoUnsafeRpc = false;
+			this.pollPendingPool(conn).catch(() => {});
 		}, this.pollIntervalMs);
 	}
 }

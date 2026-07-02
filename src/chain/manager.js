@@ -40,17 +40,6 @@ export class ChainContext {
 	}
 
 	/**
-	 * a connected node whose config explicitly flags unsafeRpc: true --
-	 * public preset endpoints reject author_pendingExtrinsics, so mempool
-	 * polling must only target operator-controlled nodes that opt in.
-	 */
-	findUnsafeRpcConnection() {
-		return this.connections.find(c =>
-			c.connected && this.nodeConfigs.find(nc => nc.name === c.nodeName)?.unsafeRpc
-		) || null;
-	}
-
-	/**
 	 * resolve author name: knownAuthors config > on-chain identity cache > null.
 	 * use resolveAuthorIdentity for async identity fetch.
 	 */
@@ -146,7 +135,7 @@ export class ChainContext {
 			this.connectNode(nodeConfig)
 		));
 		await this.initSlotTracker();
-		this.txTracker?.start(() => this.findUnsafeRpcConnection());
+		this.txTracker?.start(() => this.connections);
 	}
 
 	async initSlotTracker() {

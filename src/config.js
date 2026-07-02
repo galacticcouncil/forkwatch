@@ -50,6 +50,7 @@ const presets = {
 				{ name: 'cf-2', url: 'wss://rpc-catfish-2.catfish.hydration.cloud' },
 				{ name: 'cf-3', url: 'wss://rpc-catfish-3.catfish.hydration.cloud' },
 				{ name: 'cf-4', url: 'wss://rpc-catfish-4.catfish.hydration.cloud' },
+				{ name: 'tarn', url: 'wss://hdx.tarn.hydration.cloud' },
 			],
 			knownAuthors: {},
 		},

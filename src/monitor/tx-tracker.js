@@ -7,6 +7,7 @@ const MAX_FINALIZED_HASHES = 10000; // safety cap on the double-finalize guard s
 const UNSUPPORTED_RECHECK_MS = 30 * 60 * 1000; // retry nodes marked unsupported periodically
 const RESUBMIT_RETRY_INTERVAL_MS = 30000; // fixed cadence for auto-resubmit retries, independent of blocktime
 const MAX_RESUBMIT_RETRIES = 30; // safety cap (~15 minutes at the 30s interval)
+const REAPPEAR_DEBOUNCE_POLLS = 2; // consecutive present-polls required before treating a missing candidate as recovered
 
 const METRIC_BY_STATUS = {
 	dropped: 'tx_dropped_total',
@@ -36,6 +37,7 @@ export class TxTracker {
 		this.reorgGracePeriodBlocks = opts.reorgGracePeriodBlocks ?? 10;
 		this.dropGracePolls = opts.dropGracePolls ?? DROP_GRACE_POLLS;
 		this.dropMaxWaitPolls = opts.dropMaxWaitPolls ?? DROP_MAX_WAIT_POLLS;
+		this.reappearDebouncePolls = opts.reappearDebouncePolls ?? REAPPEAR_DEBOUNCE_POLLS;
 
 		/**
 		 * auto-resubmission replays the exact already-signed bytes for every
@@ -47,8 +49,8 @@ export class TxTracker {
 		this.maxResubmitRetries = opts.maxResubmitRetries ?? MAX_RESUBMIT_RETRIES;
 		/** @type {Map<string, {timer: object, lostAtHeight: number|null}>} active periodic retry loops, keyed by hash -- doubles as the idempotency guard (a hash already in here won't be started twice) */
 		this.resubmitRetryTimers = new Map();
-		/** @type {object|null} most recently used live api connection, for submitting resubmissions */
-		this.activeApi = null;
+		/** @type {(() => Array)|null} returns current NodeConnections for the chain, set by start() -- resubmissions fan out to every connected one, since any single node may already have (or be missing) a given hash */
+		this.getConnections = null;
 
 		/** @type {Map<string, {number:number, extrinsics: Array}>} keyed by block hash */
 		this.blockExtrinsics = new Map();
@@ -93,7 +95,6 @@ export class TxTracker {
 	 */
 	async onNewBlock(api, hash, number) {
 		this.lastKnownHeight = Math.max(this.lastKnownHeight, number);
-		this.activeApi = api;
 
 		let extrinsics;
 		try {
@@ -147,8 +148,6 @@ export class TxTracker {
 	 * until the periodic recheck window passes.
 	 */
 	async pollPendingPool(conn) {
-		this.activeApi = conn.api;
-
 		let raw;
 		try {
 			raw = await conn.api.rpc.author.pendingExtrinsics();
@@ -167,7 +166,20 @@ export class TxTracker {
 		}
 
 		for (const [hash, tx] of currentByHash) {
-			this.missingCandidates.delete(hash); // reappeared in the pool, no longer missing
+			const cand = this.missingCandidates.get(hash);
+			if (cand) {
+				// debounce: require REAPPEAR_DEBOUNCE_POLLS consecutive present-polls
+				// before fully clearing it. a single-poll flicker (this node's view
+				// briefly catching up, not a real recovery) would otherwise tear down
+				// and immediately restart the retry loop, firing a fresh "immediate
+				// first attempt" every time -- which looks like a much faster retry
+				// cadence than RESUBMIT_RETRY_INTERVAL_MS actually is.
+				cand.reappearedStreak = (cand.reappearedStreak || 0) + 1;
+				if (cand.reappearedStreak >= this.reappearDebouncePolls) {
+					this.missingCandidates.delete(hash);
+					this.stopResubmitRetry(hash);
+				}
+			}
 			if (!this.pendingPool.has(hash)) {
 				this.pendingPool.set(hash, { ...tx, firstSeenAt: Date.now() });
 			}
@@ -182,7 +194,13 @@ export class TxTracker {
 
 	onTxLeftPool(hash, tx) {
 		if (this.includedHashes.has(hash)) return; // clean success, nothing to track
-		this.missingCandidates.set(hash, { ...tx, missingSincePollCount: 0 });
+
+		const existing = this.missingCandidates.get(hash);
+		if (existing) {
+			existing.reappearedStreak = 0; // flickered again -- cancel the pending "recovered" call, keep its missingSincePollCount clock running
+			return;
+		}
+		this.missingCandidates.set(hash, { ...tx, missingSincePollCount: 0, reappearedStreak: 0 });
 	}
 
 	reviewMissingCandidates() {
@@ -366,28 +384,49 @@ export class TxTracker {
 
 	/**
 	 * replay the exact already-signed bytes we captured for any tracked
-	 * account -- no new signature is ever created here, ever. records every
-	 * attempt (success or failure) to resubmit_attempts regardless of whether
+	 * account -- no new signature is ever created here, ever. fans out to
+	 * EVERY currently-connected node for the chain, not just one: a node that
+	 * already has (or recently had) this exact hash will reject it as
+	 * "already imported" even though the transaction is genuinely missing
+	 * from the network's canonical view, so a single-node attempt tells us
+	 * little. counts as succeeded if any node accepts it. records one
+	 * aggregate row per attempt to resubmit_attempts regardless of whether
 	 * the underlying incident ever gets a submitted_txs row.
 	 */
 	async resubmitOnce(record, hash, trigger) {
+		const connections = (this.getConnections?.() || []).filter(c => c.connected);
 		this.m.tx_resubmit_attempted_total?.inc({ chain: this.chainName });
 
-		try {
-			const resultHash = await this.activeApi.rpc.author.submitExtrinsic(record.raw);
+		if (!connections.length) {
+			this.m.tx_resubmit_failed_total?.inc({ chain: this.chainName });
+			insertResubmitAttempt({
+				chain: this.chainName, signer: record.signer, nonce: record.nonce,
+				hash, trigger, result: 'failed', error: 'no connected nodes',
+			}).catch(err => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${err.message}`));
+			return;
+		}
+
+		const results = await Promise.allSettled(
+			connections.map(c => c.api.rpc.author.submitExtrinsic(record.raw).then(r => ({ node: c.nodeName, hash: r })))
+		);
+		const accepted = results.filter(r => r.status === 'fulfilled');
+		const rejected = results.filter(r => r.status === 'rejected');
+
+		if (accepted.length) {
 			this.m.tx_resubmit_succeeded_total?.inc({ chain: this.chainName });
-			console.log(`[${this.chainName}] auto-resubmitted ${hash} for signer ${record.signer} (${trigger}) -> ${resultHash.toHex ? resultHash.toHex() : resultHash}`);
+			console.log(`[${this.chainName}] auto-resubmitted ${hash} for signer ${record.signer} (${trigger}) -- accepted by ${accepted.length}/${connections.length} nodes (${accepted.map(r => r.value.node).join(', ')})`);
 			insertResubmitAttempt({
 				chain: this.chainName, signer: record.signer, nonce: record.nonce,
 				hash, trigger, result: 'succeeded', error: null,
 			}).catch(err => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${err.message}`));
-		} catch (err) {
+		} else {
+			const summary = [...new Set(rejected.map(r => r.reason?.message || String(r.reason)))].join('; ');
+			console.log(`[${this.chainName}] auto-resubmit failed for ${hash} (signer ${record.signer}, ${trigger}) -- rejected by all ${connections.length} nodes: ${summary}`);
 			this.m.tx_resubmit_failed_total?.inc({ chain: this.chainName });
-			console.log(`[${this.chainName}] auto-resubmit failed for ${hash} (signer ${record.signer}, ${trigger}): ${err.message}`);
 			insertResubmitAttempt({
 				chain: this.chainName, signer: record.signer, nonce: record.nonce,
-				hash, trigger, result: 'failed', error: err.message,
-			}).catch(e => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${e.message}`));
+				hash, trigger, result: 'failed', error: `0/${connections.length} nodes accepted: ${summary}`,
+			}).catch(err => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${err.message}`));
 		}
 	}
 
@@ -435,7 +474,7 @@ export class TxTracker {
 				this.stopResubmitRetry(record.hash);
 				return;
 			}
-			if (!this.activeApi) return; // no connection yet -- try again next tick
+			if (!this.getConnections?.().some(c => c.connected)) return; // no connection yet -- try again next tick
 
 			attempts++;
 			this.resubmitOnce(record, record.hash, record.lostAtHeight != null ? 'reorg_loss' : 'mempool_drop');
@@ -493,8 +532,10 @@ export class TxTracker {
 	 * start mempool polling. getConnections should return all NodeConnections
 	 * for the chain (connected or not) -- capability is probed at runtime, not
 	 * configured, since public RPC endpoints typically reject this unsafe call.
+	 * also stashed for resubmission fan-out (see resubmitOnce).
 	 */
 	start(getConnections) {
+		this.getConnections = getConnections;
 		if (this.pollTimer) return;
 		this.pollTimer = setInterval(() => {
 			const conn = this.pickPollableConnection(getConnections());

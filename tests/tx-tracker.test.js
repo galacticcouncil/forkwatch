@@ -150,7 +150,7 @@ describe('TxTracker', () => {
 			}));
 		});
 
-		test('a reappearing hash clears its missing-candidate state', async () => {
+		test('a reappearing hash needs reappearDebouncePolls consecutive present-polls before clearing', async () => {
 			const api = fakeApi();
 			const conn = fakeConn(api);
 
@@ -162,8 +162,45 @@ describe('TxTracker', () => {
 			expect(tracker.missingCandidates.has('0xaaa')).toBe(true);
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
-			await tracker.pollPendingPool(conn); // reappeared
+			await tracker.pollPendingPool(conn); // reappeared once -- not enough yet (default debounce is 2)
+			expect(tracker.missingCandidates.has('0xaaa')).toBe(true);
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
+			await tracker.pollPendingPool(conn); // reappeared a second consecutive time -- now cleared
 			expect(tracker.missingCandidates.has('0xaaa')).toBe(false);
+		});
+
+		test('a single-poll flicker does not reset the missing-since clock or restart the retry loop', async () => {
+			const wtracker = new TxTracker('test-chain', m, {
+				dropGracePolls: 2, dropMaxWaitPolls: 4, reorgGracePeriodBlocks: 2,
+				resubmitEnabled: true,
+			});
+			const api = fakeApi();
+			const conn = fakeConn(api);
+			wtracker.getConnections = () => [conn];
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
+			await wtracker.pollPendingPool(conn); // seen pending
+
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await wtracker.pollPendingPool(conn); // missing count 1
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await wtracker.pollPendingPool(conn); // missing count 2 -- crosses dropGracePolls, retry starts
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
+			await wtracker.pollPendingPool(conn); // flickers back for one poll (not 2 consecutive)
+			expect(wtracker.missingCandidates.has('0xaaa')).toBe(true); // still tracked, not cleared
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(true); // retry loop was not torn down
+
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await wtracker.pollPendingPool(conn); // missing again -- clock resumes from where it left off, not from 0
+			extractTrackedExtrinsics.mockReturnValue([]);
+			await wtracker.pollPendingPool(conn); // crosses dropMaxWaitPolls(4) despite the flicker
+
+			expect(m.tx_dropped_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			// only one retry loop ever started for this hash -- not restarted by the flicker
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
 		});
 	});
 
@@ -296,6 +333,7 @@ describe('TxTracker', () => {
 			const wtracker = tracker();
 			const api = fakeApi();
 			const conn = fakeConn(api);
+			wtracker.getConnections = () => [conn];
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
 			await wtracker.pollPendingPool(conn); // seen pending
@@ -307,6 +345,7 @@ describe('TxTracker', () => {
 			await wtracker.pollPendingPool(conn); // missing count 2, crosses threshold -> immediate retry
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledWith('0xrawbytes');
 			expect(m.tx_resubmit_attempted_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			await flushMicrotasks();
 			expect(insertResubmitAttempt).toHaveBeenCalledWith(expect.objectContaining({
 				signer: 'alice', hash: '0xaaa', trigger: 'mempool_drop', result: 'succeeded',
 			}));
@@ -318,6 +357,7 @@ describe('TxTracker', () => {
 			const wtracker = tracker(); // no whitelist, every tx with raw is eligible
 			const api = fakeApi();
 			const conn = fakeConn(api);
+			wtracker.getConnections = () => [conn];
 
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ signer: 'mallory', raw: '0xrawbytes' })]);
 			await wtracker.pollPendingPool(conn);
@@ -346,6 +386,7 @@ describe('TxTracker', () => {
 		test('fires immediately on reorg loss, before the classification grace period elapses', async () => {
 			const wtracker = tracker();
 			const api = fakeApi();
+			wtracker.getConnections = () => [fakeConn(api)];
 			const tree = new BlockTree('test-chain');
 			tree.addBlock('0x99', 99, '0x98', null, null, null, 'node-1');
 			tree.addBlock('0xa1', 100, '0x99', null, null, null, 'node-1'); // winner
@@ -372,7 +413,7 @@ describe('TxTracker', () => {
 			jest.useFakeTimers();
 			const wtracker = tracker();
 			const api = fakeApi();
-			wtracker.activeApi = api;
+			wtracker.getConnections = () => [fakeConn(api)];
 
 			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
 			wtracker.startResubmitRetry(record);
@@ -391,7 +432,7 @@ describe('TxTracker', () => {
 			jest.useFakeTimers();
 			const wtracker = tracker();
 			const api = fakeApi();
-			wtracker.activeApi = api;
+			wtracker.getConnections = () => [fakeConn(api)];
 
 			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
 			wtracker.startResubmitRetry(record);
@@ -409,7 +450,7 @@ describe('TxTracker', () => {
 			jest.useFakeTimers();
 			const wtracker = tracker();
 			const api = fakeApi();
-			wtracker.activeApi = api;
+			wtracker.getConnections = () => [fakeConn(api)];
 
 			const record = {
 				signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate',
@@ -429,7 +470,7 @@ describe('TxTracker', () => {
 			jest.useFakeTimers();
 			const wtracker = tracker({ maxResubmitRetries: 3, resubmitRetryIntervalMs: 1000 });
 			const api = fakeApi();
-			wtracker.activeApi = api;
+			wtracker.getConnections = () => [fakeConn(api)];
 
 			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
 			wtracker.startResubmitRetry(record); // attempt 1 (immediate)
@@ -446,7 +487,7 @@ describe('TxTracker', () => {
 		test('does not start a second retry loop for a hash already being retried', async () => {
 			const wtracker = tracker();
 			const api = fakeApi();
-			wtracker.activeApi = api;
+			wtracker.getConnections = () => [fakeConn(api)];
 
 			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
 			wtracker.startResubmitRetry(record);

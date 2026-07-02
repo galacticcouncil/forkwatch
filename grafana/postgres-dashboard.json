@@ -192,6 +192,58 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "title": "recent resubmission attempts",
+      "description": "auto-resubmission attempts for whitelisted accounts (RESUBMIT_ENABLED), from resubmit_attempts",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 54 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "result" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-background", "mode": "basic" }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "succeeded": { "color": "green", "text": "succeeded" }, "failed": { "color": "red", "text": "failed" } } }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT chain, signer, nonce, hash, trigger, result, error, attempted_at FROM resubmit_attempts WHERE $__timeFilter(attempted_at) AND ('$chain' = 'all' OR chain = '$chain') ORDER BY attempted_at DESC LIMIT 200",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "resubmission success rate per hour",
+      "description": "share of auto-resubmission attempts accepted back into the pool, from resubmit_attempts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 64 },
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "max": 1, "min": 0 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT date_trunc('hour', attempted_at) as time, chain, count(*) FILTER (WHERE result = 'succeeded')::float / count(*) as value FROM resubmit_attempts WHERE $__timeFilter(attempted_at) AND ('$chain' = 'all' OR chain = '$chain') GROUP BY 1, 2 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "templating": {

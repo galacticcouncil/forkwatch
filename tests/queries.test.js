@@ -18,6 +18,9 @@ const {
 	getRecentForkEvents,
 	getBlocksAtHeight,
 	cleanupOldData,
+	insertSubmittedTx,
+	getSubmittedTxs,
+	getSubmittedTxsBySigner,
 } = await import('../src/db/queries.js');
 
 describe('db/queries', () => {
@@ -178,32 +181,121 @@ describe('db/queries', () => {
 	});
 
 	describe('cleanupOldData', () => {
-		test('deletes from all three tables', async () => {
+		test('deletes from all four tables', async () => {
 			mockQuery.mockResolvedValue({ rowCount: 5 });
 
-			const result = await cleanupOldData(90, 365);
+			const result = await cleanupOldData(90, 365, 180);
 
-			expect(mockQuery).toHaveBeenCalledTimes(3);
+			expect(mockQuery).toHaveBeenCalledTimes(4);
 
 			const tables = mockQuery.mock.calls.map(([sql]) => {
 				if (sql.includes('fork_blocks')) return 'blocks';
 				if (sql.includes('finality_log')) return 'finality';
 				if (sql.includes('fork_events')) return 'events';
+				if (sql.includes('submitted_txs')) return 'txs';
 			});
-			expect(tables.sort()).toEqual(['blocks', 'events', 'finality']);
+			expect(tables.sort()).toEqual(['blocks', 'events', 'finality', 'txs']);
 
-			expect(result).toEqual({ blocks: 5, finality: 5, events: 5 });
+			expect(result).toEqual({ blocks: 5, finality: 5, events: 5, txs: 5 });
 		});
 
 		test('passes correct retention periods', async () => {
 			mockQuery.mockResolvedValue({ rowCount: 0 });
-			await cleanupOldData(30, 180);
+			await cleanupOldData(30, 180, 90);
 
 			const blockCall = mockQuery.mock.calls.find(([sql]) => sql.includes('fork_blocks'));
 			const eventCall = mockQuery.mock.calls.find(([sql]) => sql.includes('fork_events'));
+			const txCall = mockQuery.mock.calls.find(([sql]) => sql.includes('submitted_txs'));
 
 			expect(blockCall[1]).toEqual([30]);
 			expect(eventCall[1]).toEqual([180]);
+			expect(txCall[1]).toEqual([90]);
+		});
+	});
+
+	describe('insertSubmittedTx', () => {
+		test('inserts with correct params, stringifying attempts', async () => {
+			const attempts = [{ hash: '0xaaa', birth: 100, death: 164, firstSeenAt: 1000, outcome: 'dropped' }];
+
+			await insertSubmittedTx({
+				chain: 'hydration',
+				signer: 'alice',
+				nonce: 5,
+				kind: 'substrate',
+				section: 'balances',
+				method: 'transfer',
+				status: 'dropped',
+				firstHash: '0xaaa',
+				lastHash: '0xaaa',
+				attempts,
+				lostAtHeight: null,
+				lostAtHash: null,
+				resolvedHash: null,
+				resolvedHeight: null,
+			});
+
+			expect(mockQuery).toHaveBeenCalledTimes(1);
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('INSERT INTO submitted_txs');
+			expect(params).toEqual([
+				'hydration', 'alice', 5, 'substrate', 'balances', 'transfer', 'dropped',
+				'0xaaa', '0xaaa', JSON.stringify(attempts), null, null, null, null,
+			]);
+		});
+
+		test('allows null signer/nonce for unrecovered evm rows', async () => {
+			await insertSubmittedTx({
+				chain: 'moonbeam',
+				signer: null,
+				nonce: null,
+				kind: 'evm',
+				section: 'ethereum',
+				method: 'transact',
+				status: 'dropped',
+				firstHash: '0xbbb',
+				lastHash: '0xbbb',
+				attempts: [],
+				lostAtHeight: null,
+				lostAtHash: null,
+				resolvedHash: null,
+				resolvedHeight: null,
+			});
+
+			const [, params] = mockQuery.mock.calls[0];
+			expect(params[1]).toBeNull(); // signer
+			expect(params[2]).toBeNull(); // nonce
+			expect(params[3]).toBe('evm');
+		});
+	});
+
+	describe('getSubmittedTxs', () => {
+		test('queries without filters', async () => {
+			await getSubmittedTxs(null, null, 50);
+
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('ORDER BY detected_at DESC');
+			expect(sql).not.toContain('WHERE');
+			expect(params).toEqual([50]);
+		});
+
+		test('queries with chain, status and kind filters', async () => {
+			await getSubmittedTxs('hydration', 'dropped', 25, 'substrate');
+
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('chain = $1');
+			expect(sql).toContain('status = $2');
+			expect(sql).toContain('kind = $3');
+			expect(params).toEqual(['hydration', 'dropped', 'substrate', 25]);
+		});
+	});
+
+	describe('getSubmittedTxsBySigner', () => {
+		test('queries with chain and signer', async () => {
+			await getSubmittedTxsBySigner('moonbeam', '0xabc', 25);
+
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('SELECT * FROM submitted_txs');
+			expect(params).toEqual(['moonbeam', '0xabc', 25]);
 		});
 	});
 });

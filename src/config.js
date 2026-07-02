@@ -9,6 +9,11 @@ export const forkEventRetentionDays = Number(process.env.FORK_EVENT_RETENTION_DA
 export const finalityLogInterval = Number(process.env.FINALITY_LOG_INTERVAL) || 60; // seconds
 export const databaseUrl = process.env.DATABASE_URL || null;
 
+export const txTrackingEnabled = process.env.TX_TRACKING_ENABLED !== 'false'; // kill switch, default on
+export const mempoolPollIntervalMs = Number(process.env.TX_MEMPOOL_POLL_INTERVAL_MS) || 6000;
+export const txReorgGracePeriodBlocks = Number(process.env.TX_REORG_GRACE_PERIOD_BLOCKS) || 10;
+export const txRetentionDays = Number(process.env.TX_RETENTION_DAYS) || 180;
+
 const presets = {
 	hydration: [
 		{

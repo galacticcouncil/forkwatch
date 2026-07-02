@@ -140,6 +140,41 @@ describe('BlockTree', () => {
 		});
 	});
 
+	describe('getCanonicalAncestorAt', () => {
+		test('walks back through non-forked ancestors', () => {
+			tree.addBlock('0xaa', 100, '0x99', null, null, null, 'node-1');
+			tree.addBlock('0xbb', 101, '0xaa', null, null, null, 'node-1');
+			tree.addBlock('0xcc', 102, '0xbb', null, null, null, 'node-1');
+
+			const ancestor = tree.getCanonicalAncestorAt('0xcc', 100);
+			expect(ancestor.hash).toBe('0xaa');
+		});
+
+		test('identifies the winning block at a forked height', () => {
+			tree.addBlock('0xa1', 100, '0x99', null, null, null, 'node-1');
+			tree.addBlock('0xa2', 100, '0x99', null, null, null, 'node-1');
+			tree.addBlock('0xb1', 101, '0xa1', null, null, null, 'node-1');
+
+			// 0xa1 won the fork at height 100, since 0xb1 descends from it
+			const ancestor = tree.getCanonicalAncestorAt('0xb1', 100);
+			expect(ancestor.hash).toBe('0xa1');
+		});
+
+		test('returns the block itself when fromHash is already at targetHeight', () => {
+			tree.addBlock('0xaa', 100, '0x99', null, null, null, 'node-1');
+			expect(tree.getCanonicalAncestorAt('0xaa', 100).hash).toBe('0xaa');
+		});
+
+		test('returns null for an unknown fromHash', () => {
+			expect(tree.getCanonicalAncestorAt('0xzz', 100)).toBeNull();
+		});
+
+		test('returns null when the ancestor chain is broken before reaching targetHeight', () => {
+			tree.addBlock('0xbb', 101, '0xaa', null, null, null, 'node-1'); // parent 0xaa was never added
+			expect(tree.getCanonicalAncestorAt('0xbb', 100)).toBeNull();
+		});
+	});
+
 	describe('prune', () => {
 		test('removes blocks at and below keepAboveHeight', () => {
 			tree.addBlock('0xaa', 100, '0x99', null, null, null, 'node-1');

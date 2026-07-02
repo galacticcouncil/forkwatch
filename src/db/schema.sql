@@ -60,3 +60,30 @@ CREATE TABLE IF NOT EXISTS finality_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_finality_log_chain ON finality_log (chain, recorded_at);
+
+CREATE TABLE IF NOT EXISTS submitted_txs (
+	id              BIGSERIAL PRIMARY KEY,
+	chain           TEXT NOT NULL,
+	signer          TEXT, -- null when evm sender recovery failed/wasn't attempted (wrapper-hash-only tracking)
+	nonce           BIGINT,
+	kind            TEXT NOT NULL DEFAULT 'substrate', -- substrate | evm
+	section         TEXT,
+	method          TEXT,
+	status          TEXT NOT NULL, -- dropped | expired | resubmitted | reorged_lost | reorged_resubmitted | reorged_reincluded
+	first_hash      TEXT NOT NULL,
+	last_hash       TEXT NOT NULL,
+	-- one entry per hash this (signer,nonce) incident cycled through: {hash, birth, death, firstSeenAt, outcome}.
+	-- era is per-attempt, not per-incident -- a resubmission gets its own era (that's typically why
+	-- the hash changed at all), so a flat birth/death column would misrepresent multi-attempt incidents.
+	attempts        JSONB NOT NULL DEFAULT '[]',
+	lost_at_height  BIGINT,
+	lost_at_hash    TEXT,
+	resolved_hash   TEXT,
+	resolved_height BIGINT,
+	detected_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	resolved_at     TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_submitted_txs_chain_signer ON submitted_txs (chain, signer);
+CREATE INDEX IF NOT EXISTS idx_submitted_txs_status ON submitted_txs (chain, status);
+CREATE INDEX IF NOT EXISTS idx_submitted_txs_detected ON submitted_txs (chain, detected_at);

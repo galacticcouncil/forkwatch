@@ -5,9 +5,9 @@ import { endpoints } from './endpoints.js';
 import { metrics } from './metrics.js';
 import { initDb, closeDb } from './db/index.js';
 import { ChainManager } from './chain/manager.js';
-import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData } from './db/queries.js';
+import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData, getSubmittedTxs, getSubmittedTxsBySigner } from './db/queries.js';
 import { dbEnabled } from './db/index.js';
-import { chains, retentionDays, forkEventRetentionDays } from './config.js';
+import { chains, retentionDays, forkEventRetentionDays, txRetentionDays } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dashboardHtml = readFileSync(join(__dirname, 'dashboard.html'), 'utf8');
@@ -78,6 +78,36 @@ const m = metrics.register('forkwatch', {
 		type: 'counter',
 		help: 'aura slots produced by a collator on the finalized chain',
 		labels: ['chain', 'collator'],
+	},
+	tx_dropped_total: {
+		type: 'counter',
+		help: 'txs that disappeared from the mempool and were never included',
+		labels: ['chain'],
+	},
+	tx_expired_total: {
+		type: 'counter',
+		help: 'txs whose mortal era passed before inclusion (normal, not evidence of a bug)',
+		labels: ['chain'],
+	},
+	tx_resubmitted_total: {
+		type: 'counter',
+		help: 'txs resubmitted with a new hash for the same signer+nonce after disappearing from the mempool',
+		labels: ['chain'],
+	},
+	tx_reorged_lost_total: {
+		type: 'counter',
+		help: 'txs included in a reorged-out block that never reappeared on the canonical chain',
+		labels: ['chain'],
+	},
+	tx_reorged_resubmitted_total: {
+		type: 'counter',
+		help: 'txs reorged out and resubmitted with a new hash before reappearing',
+		labels: ['chain'],
+	},
+	tx_tracked_total: {
+		type: 'counter',
+		help: 'total trackable extrinsics observed (mempool or block)',
+		labels: ['chain'],
 	},
 });
 
@@ -154,6 +184,27 @@ function registerApiEndpoints() {
 		}
 	});
 
+	endpoints.registerEndpoint('txs', {
+		'/': {
+			GET: async (req, res) => {
+				const limit = Math.min(Number(req.query.limit) || 100, 1000);
+				if (!dbEnabled()) return res.json([]);
+				const result = await getSubmittedTxs(
+					req.query.chain || null, req.query.status || null, limit, req.query.kind || null
+				);
+				res.json(result.rows);
+			}
+		},
+		'/:chain/:signer': {
+			GET: async (req, res) => {
+				const limit = Math.min(Number(req.query.limit) || 100, 1000);
+				if (!dbEnabled()) return res.json([]);
+				const result = await getSubmittedTxsBySigner(req.params.chain, req.params.signer, limit);
+				res.json(result.rows);
+			}
+		}
+	});
+
 	endpoints.registerEndpoint('health', {
 		'/': {
 			GET: (req, res) => {
@@ -167,11 +218,11 @@ function startRetentionCleanup() {
 	// run daily
 	setInterval(async () => {
 		try {
-			const result = await cleanupOldData(retentionDays, forkEventRetentionDays);
-			if (result.blocks > 0 || result.finality > 0 || result.events > 0) {
+			const result = await cleanupOldData(retentionDays, forkEventRetentionDays, txRetentionDays);
+			if (result.blocks > 0 || result.finality > 0 || result.events > 0 || result.txs > 0) {
 				console.log(
 					`retention cleanup: ${result.blocks} blocks, ` +
-					`${result.finality} finality logs, ${result.events} events deleted`
+					`${result.finality} finality logs, ${result.events} events, ${result.txs} txs deleted`
 				);
 			}
 		} catch (err) {

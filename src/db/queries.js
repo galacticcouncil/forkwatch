@@ -69,8 +69,8 @@ export async function getBlocksAtHeight(chain, height) {
 	);
 }
 
-export async function cleanupOldData(retentionDays, forkEventRetentionDays) {
-	if (!dbEnabled()) return { blocks: 0, finality: 0, events: 0 };
+export async function cleanupOldData(retentionDays, forkEventRetentionDays, txRetentionDays) {
+	if (!dbEnabled()) return { blocks: 0, finality: 0, events: 0, txs: 0 };
 	const blockResult = await db().query(
 		`DELETE FROM fork_blocks WHERE imported_at < NOW() - INTERVAL '1 day' * $1`,
 		[retentionDays]
@@ -83,9 +83,69 @@ export async function cleanupOldData(retentionDays, forkEventRetentionDays) {
 		`DELETE FROM fork_events WHERE detected_at < NOW() - INTERVAL '1 day' * $1`,
 		[forkEventRetentionDays]
 	);
+	const txResult = await db().query(
+		`DELETE FROM submitted_txs WHERE detected_at < NOW() - INTERVAL '1 day' * $1`,
+		[txRetentionDays]
+	);
 	return {
 		blocks: blockResult.rowCount,
 		finality: finalityResult.rowCount,
-		events: eventResult.rowCount
+		events: eventResult.rowCount,
+		txs: txResult.rowCount,
 	};
+}
+
+export async function insertSubmittedTx(tx) {
+	if (!dbEnabled()) return noop;
+	const {
+		chain, signer, nonce, kind, section, method, status,
+		firstHash, lastHash, attempts,
+		lostAtHeight, lostAtHash, resolvedHash, resolvedHeight,
+	} = tx;
+	return db().query(
+		`INSERT INTO submitted_txs (chain, signer, nonce, kind, section, method, status,
+		 first_hash, last_hash, attempts, lost_at_height, lost_at_hash, resolved_hash, resolved_height,
+		 resolved_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+		 RETURNING id`,
+		[chain, signer, nonce, kind, section, method, status,
+		 firstHash, lastHash, JSON.stringify(attempts || []),
+		 lostAtHeight, lostAtHash, resolvedHash, resolvedHeight]
+	);
+}
+
+export async function getSubmittedTxs(chain, status, limit = 100, kind = null) {
+	if (!dbEnabled()) return { rows: [] };
+	const conditions = [];
+	const params = [];
+
+	if (chain) {
+		params.push(chain);
+		conditions.push(`chain = $${params.length}`);
+	}
+	if (status) {
+		params.push(status);
+		conditions.push(`status = $${params.length}`);
+	}
+	if (kind) {
+		params.push(kind);
+		conditions.push(`kind = $${params.length}`);
+	}
+
+	const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+	params.push(limit);
+
+	return db().query(
+		`SELECT * FROM submitted_txs ${where} ORDER BY detected_at DESC LIMIT $${params.length}`,
+		params
+	);
+}
+
+export async function getSubmittedTxsBySigner(chain, signer, limit = 100) {
+	if (!dbEnabled()) return { rows: [] };
+	return db().query(
+		`SELECT * FROM submitted_txs WHERE chain = $1 AND signer = $2
+		 ORDER BY detected_at DESC LIMIT $3`,
+		[chain, signer, limit]
+	);
 }

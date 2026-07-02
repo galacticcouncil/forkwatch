@@ -33,14 +33,14 @@ export class ForkDetector {
 	/**
 	 * called each time a new block header arrives from any node.
 	 * detects forks and records metrics + db entries.
-	 * @returns {{ record: import('./block-tree.js').BlockRecord, forked: boolean }}
+	 * @returns {{ record: import('./block-tree.js').BlockRecord, forked: boolean, isNew: boolean }}
 	 */
 	async onNewBlock(hash, number, parentHash, author, authorName, relayParent, nodeName, extra = {}) {
 		const { record, isNew } = this.blockTree.addBlock(
 			hash, number, parentHash, author, authorName, relayParent, nodeName, extra
 		);
 
-		if (!isNew) return { record, forked: false };
+		if (!isNew) return { record, forked: false, isNew: false };
 
 		this.m.blocks_imported_total.inc({ chain: this.chainName, node: nodeName });
 
@@ -55,7 +55,7 @@ export class ForkDetector {
 			await this.onForkUpdated(number, blocksAtHeight);
 		}
 
-		return { record, forked };
+		return { record, forked, isNew: true };
 	}
 
 	async onForkDetected(height, blocksAtHeight) {

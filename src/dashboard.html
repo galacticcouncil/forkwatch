@@ -47,6 +47,9 @@ body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; backgrou
 .color-double-timing { background: #6e7681; }
 .color-double-reorg { background: #316dca; }
 .color-unknown { background: #21262d; }
+.tag-dropped, .tag-reorged_lost { background: #3d1f1f; color: #f85149; }
+.tag-resubmitted, .tag-reorged_resubmitted { background: #3d2508; color: #d29922; }
+.tag-expired { background: #21262d; color: #7d8590; }
 .forks-table { width: 100%; margin-top: 8px; }
 .forks-section { padding: 16px 24px; }
 .forks-section h2 { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; }
@@ -85,6 +88,11 @@ tr:hover td { background: #161b22; }
   <table>
     <thead><tr><th>chain</th><th>height</th><th>authors</th><th>cause</th><th>depth</th><th>resolved</th><th>time</th></tr></thead>
     <tbody id="forks"></tbody>
+  </table>
+  <h3 style="font-size: 13px; font-weight: 600; color: #f0f6fc; margin: 20px 0 8px">transaction issues</h3>
+  <table>
+    <thead><tr><th>chain</th><th>kind</th><th>signer</th><th>nonce</th><th>call</th><th>status</th><th>time</th></tr></thead>
+    <tbody id="txs"></tbody>
   </table>
 </div>
 
@@ -446,6 +454,28 @@ function authorSpan(name) {
   return `<span style="color:${color}" title="${name}">${short}</span>`;
 }
 
+const TX_STATUS_LABELS = {
+  dropped: 'dropped',
+  expired: 'expired',
+  resubmitted: 'resubmitted',
+  reorged_lost: 'reorg lost',
+  reorged_resubmitted: 'reorg+resubmit',
+};
+
+function renderTx(t) {
+  const label = TX_STATUS_LABELS[t.status] || t.status;
+  const call = t.section && t.method ? `${t.section}.${t.method}` : '-';
+  return `<tr>
+    <td>${t.chain}</td>
+    <td>${t.kind}</td>
+    <td>${t.signer ? authorSpan(t.signer) : '<span style="color:#6e7681">unknown</span>'}</td>
+    <td>${t.nonce ?? '-'}</td>
+    <td>${call}</td>
+    <td><span class="tag tag-${t.status}">${label}</span></td>
+    <td>${timeAgo(t.detected_at)}</td>
+  </tr>`;
+}
+
 function renderFork(f) {
   const cause = f.cause || '';
   const color = CAUSE_COLORS[cause] || '';
@@ -469,9 +499,10 @@ function renderFork(f) {
 
 async function update() {
   try {
-    const [status, forks] = await Promise.all([
+    const [status, forks, txs] = await Promise.all([
       fetch('/api/status').then(r => r.json()),
       fetch(selectedChain ? `/api/forks/${selectedChain}?limit=100` : '/api/forks?limit=100').then(r => r.json()),
+      fetch(selectedChain ? `/api/txs?chain=${selectedChain}&limit=100` : '/api/txs?limit=100').then(r => r.json()),
     ]);
 
     document.getElementById('db').textContent = status.database ? 'db connected' : 'no db';
@@ -504,6 +535,7 @@ async function update() {
 
     document.getElementById('missed-combos').innerHTML = renderMissedCombos(status, selectedChain);
     document.getElementById('fork-combos').innerHTML = renderForkCombos(filtered);
+    document.getElementById('txs').innerHTML = txs.map(renderTx).join('');
   } catch (e) {
     document.getElementById('refresh').textContent = `error: ${e.message}`;
   }

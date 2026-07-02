@@ -47,9 +47,15 @@ describe('ForkDetector', () => {
 			await detector.onNewBlock('0xaa', 100, '0x99', null, null, null, 'node-1');
 			m.blocks_imported_total.inc.mockClear();
 
-			const { forked } = await detector.onNewBlock('0xaa', 100, '0x99', null, null, null, 'node-2');
+			const { forked, isNew } = await detector.onNewBlock('0xaa', 100, '0x99', null, null, null, 'node-2');
 			expect(forked).toBe(false);
+			expect(isNew).toBe(false);
 			expect(m.blocks_imported_total.inc).not.toHaveBeenCalled();
+		});
+
+		test('reports isNew=true for a genuinely new block', async () => {
+			const { isNew } = await detector.onNewBlock('0xaa', 100, '0x99', null, null, null, 'node-1');
+			expect(isNew).toBe(true);
 		});
 
 		test('detects fork when second block at same height', async () => {

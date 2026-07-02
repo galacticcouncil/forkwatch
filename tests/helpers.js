@@ -20,6 +20,12 @@ export function createMockMetrics() {
 		parachain_forks_relay_caused_total: metric(),
 		collator_missed_slots_total: metric(),
 		collator_produced_slots_total: metric(),
+		tx_dropped_total: metric(),
+		tx_expired_total: metric(),
+		tx_resubmitted_total: metric(),
+		tx_reorged_lost_total: metric(),
+		tx_reorged_resubmitted_total: metric(),
+		tx_tracked_total: metric(),
 	};
 }
 

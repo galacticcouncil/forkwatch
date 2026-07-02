@@ -96,6 +96,26 @@ export class BlockTree {
 		return depth;
 	}
 
+	/**
+	 * walk parentHash links back from fromHash to find the ancestor at
+	 * targetHeight -- used to determine which competing block at a forked
+	 * height actually became canonical once a later hash finalizes.
+	 * bounded iteration guards against missing/cyclic data.
+	 * @returns {BlockRecord|null}
+	 */
+	getCanonicalAncestorAt(fromHash, targetHeight) {
+		let current = this.blocksByHash.get(fromHash);
+		let steps = 0;
+		const maxSteps = this.bestHeight - targetHeight + 100;
+
+		while (current && current.number > targetHeight) {
+			if (++steps > maxSteps) return null;
+			current = this.blocksByHash.get(current.parentHash);
+		}
+
+		return current && current.number === targetHeight ? current : null;
+	}
+
 	prune(keepAboveHeight) {
 		for (const [height, blocks] of this.blocksByHeight) {
 			if (height <= keepAboveHeight) {

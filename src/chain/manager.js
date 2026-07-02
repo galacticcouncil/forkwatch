@@ -5,9 +5,10 @@ import { FinalityTracker } from '../monitor/finality-tracker.js';
 import { AuthorExtractor } from '../monitor/author-extractor.js';
 import { ForkCausation } from '../monitor/causation.js';
 import { SlotTracker } from '../monitor/slot-tracker.js';
+import { TxTracker } from '../monitor/tx-tracker.js';
 import { resolveForkEvent } from '../db/queries.js';
 import { db, dbEnabled } from '../db/index.js';
-import { pruneAfter, timeout } from '../config.js';
+import { pruneAfter, timeout, txTrackingEnabled, mempoolPollIntervalMs, txReorgGracePeriodBlocks } from '../config.js';
 
 const RECONNECT_DELAY = 10000; // 10s between reconnect attempts
 
@@ -26,10 +27,27 @@ export class ChainContext {
 		this.slotTracker = this.consensus === 'aura'
 			? new SlotTracker(this.name, m, addr => this.resolveAuthorName(addr))
 			: null;
+		this.txTracker = txTrackingEnabled
+			? new TxTracker(this.name, m, {
+				pollIntervalMs: chainConfig.blockTimeMs || mempoolPollIntervalMs,
+				reorgGracePeriodBlocks: txReorgGracePeriodBlocks,
+			})
+			: null;
 		/** @type {NodeConnection[]} */
 		this.connections = [];
 		/** @type {number|null} target block time in milliseconds */
 		this.blockTimeMs = chainConfig.blockTimeMs || null;
+	}
+
+	/**
+	 * a connected node whose config explicitly flags unsafeRpc: true --
+	 * public preset endpoints reject author_pendingExtrinsics, so mempool
+	 * polling must only target operator-controlled nodes that opt in.
+	 */
+	findUnsafeRpcConnection() {
+		return this.connections.find(c =>
+			c.connected && this.nodeConfigs.find(nc => nc.name === c.nodeName)?.unsafeRpc
+		) || null;
 	}
 
 	/**
@@ -128,6 +146,7 @@ export class ChainContext {
 			this.connectNode(nodeConfig)
 		));
 		await this.initSlotTracker();
+		this.txTracker?.start(() => this.findUnsafeRpcConnection());
 	}
 
 	async initSlotTracker() {
@@ -219,7 +238,7 @@ export class ChainContext {
 			const stateRoot = header.stateRoot.toHex();
 			const extrinsicsRoot = header.extrinsicsRoot.toHex();
 
-			const { record, forked } = await this.forkDetector.onNewBlock(
+			const { record, forked, isNew } = await this.forkDetector.onNewBlock(
 				hash, number, parentHash, null, null, null, nodeName,
 				{ stateRoot, extrinsicsRoot }
 			);
@@ -227,6 +246,15 @@ export class ChainContext {
 			if (forked) {
 				await this.enrichForkAuthors(conn.api, number);
 				this.updateForkAuthors(number);
+			}
+
+			// fetch this block's body exactly once per unique hash, from whichever
+			// node reported it first -- fire-and-forget so a slow/failed getBlock
+			// doesn't block header processing or the watchdog reset. uses raw
+			// rpc.chain.getBlock, not api.derive.*, see tx-tracker.js for why that
+			// doesn't reproduce the per-block leak this file warns about above.
+			if (this.txTracker && isNew) {
+				this.txTracker.onNewBlock(conn.api, hash, number).catch(() => {});
 			}
 		}).then(unsub => conn.addUnsub(unsub));
 
@@ -261,6 +289,9 @@ export class ChainContext {
 			// resolve fork events at finalized heights
 			this.forkDetector.onHeightFinalized(finalizedNumber, finalizedHash);
 
+			// reads pre-prune block-tree state, so this must run before prune() below
+			this.txTracker?.onHeightFinalized(finalizedNumber, finalizedHash, this.blockTree);
+
 			await resolveForkEvent(this.name, finalizedNumber, finalizedHash)
 				.catch(() => {}); // ok if no fork event exists at this height
 
@@ -268,6 +299,7 @@ export class ChainContext {
 			const pruneBelow = finalizedNumber - pruneAfter;
 			this.blockTree.prune(pruneBelow);
 			this.forkDetector.pruneRecordedForks(pruneBelow);
+			this.txTracker?.pruneBlocks(pruneBelow);
 		}).then(unsub => conn.addUnsub(unsub));
 
 		console.log(`[${this.name}/${nodeName}] subscriptions started`);

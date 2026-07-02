@@ -5,7 +5,10 @@ import { endpoints } from './endpoints.js';
 import { metrics } from './metrics.js';
 import { initDb, closeDb } from './db/index.js';
 import { ChainManager } from './chain/manager.js';
-import { getRecentForkEvents, getBlocksAtHeight, cleanupOldData, getSubmittedTxs, getSubmittedTxsBySigner } from './db/queries.js';
+import {
+	getRecentForkEvents, getBlocksAtHeight, cleanupOldData, getSubmittedTxs, getSubmittedTxsBySigner,
+	getResubmitAttempts,
+} from './db/queries.js';
 import { dbEnabled } from './db/index.js';
 import { chains, retentionDays, forkEventRetentionDays, txRetentionDays } from './config.js';
 
@@ -215,6 +218,17 @@ function registerApiEndpoints() {
 				const limit = Math.min(Number(req.query.limit) || 100, 1000);
 				if (!dbEnabled()) return res.json([]);
 				const result = await getSubmittedTxsBySigner(req.params.chain, req.params.signer, limit);
+				res.json(result.rows);
+			}
+		}
+	});
+
+	endpoints.registerEndpoint('resubmissions', {
+		'/': {
+			GET: async (req, res) => {
+				const limit = Math.min(Number(req.query.limit) || 100, 1000);
+				if (!dbEnabled()) return res.json([]);
+				const result = await getResubmitAttempts(req.query.chain || null, req.query.signer || null, limit);
 				res.json(result.rows);
 			}
 		}

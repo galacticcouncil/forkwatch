@@ -368,7 +368,7 @@ export class TxTracker {
 	 */
 	attemptResubmission(record, originalHash) {
 		if (!this.resubmitEnabled) return;
-		if (!record.raw || !record.signer || !this.resubmitWhitelist.has(record.signer)) return;
+		if (!record.raw || !record.signer) return;
 		if (this.resubmittedHashes.has(originalHash)) return;
 		if (!this.activeApi) return;
 

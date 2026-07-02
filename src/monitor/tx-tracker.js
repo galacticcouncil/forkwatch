@@ -1,10 +1,12 @@
 import { extractTrackedExtrinsics } from './extrinsic-utils.js';
-import { insertSubmittedTx } from '../db/queries.js';
+import { insertSubmittedTx, insertResubmitAttempt } from '../db/queries.js';
 
 const DROP_GRACE_POLLS = 3; // polls to wait before treating a vanished tx as a drop candidate
 const DROP_MAX_WAIT_POLLS = 20; // polls to wait for a late resubmission before finalizing dropped/expired
 const MAX_FINALIZED_HASHES = 10000; // safety cap on the double-finalize guard set
 const UNSUPPORTED_RECHECK_MS = 30 * 60 * 1000; // retry nodes marked unsupported periodically
+const RESUBMIT_RETRY_INTERVAL_MS = 30000; // fixed cadence for auto-resubmit retries, independent of blocktime
+const MAX_RESUBMIT_RETRIES = 30; // safety cap (~15 minutes at the 30s interval)
 
 const METRIC_BY_STATUS = {
 	dropped: 'tx_dropped_total',
@@ -13,11 +15,6 @@ const METRIC_BY_STATUS = {
 	reorged_lost: 'tx_reorged_lost_total',
 	reorged_resubmitted: 'tx_reorged_resubmitted_total',
 };
-
-// auto-resubmission only makes sense for these -- 'expired' means the era
-// already lapsed (replaying the identical bytes would fail immediately), and
-// 'resubmitted'/'reorged_resubmitted' already succeeded via a different hash.
-const AUTO_RESUBMIT_STATUSES = new Set(['dropped', 'reorged_lost']);
 
 /**
  * tracks submitted transactions across two independent event sources feeding
@@ -47,8 +44,10 @@ export class TxTracker {
 		 */
 		this.resubmitEnabled = !!opts.resubmitEnabled;
 		this.resubmitWhitelist = opts.resubmitWhitelist || new Set();
-		/** @type {Set<string>} original hashes we've already attempted a resubmit for */
-		this.resubmittedHashes = new Set();
+		this.resubmitRetryIntervalMs = opts.resubmitRetryIntervalMs ?? RESUBMIT_RETRY_INTERVAL_MS;
+		this.maxResubmitRetries = opts.maxResubmitRetries ?? MAX_RESUBMIT_RETRIES;
+		/** @type {Map<string, {timer: object, lostAtHeight: number|null}>} active periodic retry loops, keyed by hash -- doubles as the idempotency guard (a hash already in here won't be started twice) */
+		this.resubmitRetryTimers = new Map();
 		/** @type {object|null} most recently used live api connection, for submitting resubmissions */
 		this.activeApi = null;
 
@@ -197,6 +196,11 @@ export class TxTracker {
 			cand.missingSincePollCount++;
 			if (cand.missingSincePollCount < this.dropGracePolls) continue;
 
+			// past the noise threshold -- start trying to get it back in ourselves
+			// (whitelisted accounts only; no-ops otherwise). classification below
+			// still runs on its own schedule regardless of whether this succeeds.
+			this.startResubmitRetry(cand);
+
 			const resubmission = this.findResubmission(cand, hash);
 			if (resubmission) {
 				this.finalize(cand, hash, 'resubmitted', {
@@ -276,12 +280,18 @@ export class TxTracker {
 			if (!losing) continue; // never captured its body (fetch failed/raced)
 
 			for (const tx of losing.extrinsics) {
-				this.pendingReorgReview.push({
+				const entry = {
 					...tx,
 					lostAtHeight: height,
 					lostAtHash: hash,
 					dueAtHeight: height + this.reorgGracePeriodBlocks,
-				});
+				};
+				this.pendingReorgReview.push(entry);
+				// the loss is already settled (this runs from onHeightFinalized, so
+				// state is final) -- no reason to wait out the grace period before
+				// trying to get it back in. classification (reorged_lost/resubmitted)
+				// still happens on its own schedule via resolveReorgEntry below.
+				this.startResubmitRetry(entry);
 			}
 		}
 	}
@@ -353,37 +363,97 @@ export class TxTracker {
 			resolvedHash: extra.replacedBy ?? null,
 			resolvedHeight: extra.resolvedHeight ?? null,
 		}).catch(err => console.error(`[${this.chainName}] failed to insert submitted_tx: ${err.message}`));
-
-		if (AUTO_RESUBMIT_STATUSES.has(status)) {
-			this.attemptResubmission(record, originalHash);
-		}
 	}
 
 	/**
 	 * replay the exact already-signed bytes we captured for a whitelisted
-	 * account -- no new signature is ever created here. gated on: feature
-	 * enabled, signer on the whitelist, raw bytes actually captured (only
-	 * happens for whitelisted signers to begin with, see extrinsic-utils.js),
-	 * a live connection available, and not already attempted for this hash.
+	 * account -- no new signature is ever created here, ever. records every
+	 * attempt (success or failure) to resubmit_attempts regardless of whether
+	 * the underlying incident ever gets a submitted_txs row.
 	 */
-	attemptResubmission(record, originalHash) {
-		if (!this.resubmitEnabled) return;
-		if (!record.raw || !record.signer) return;
-		if (this.resubmittedHashes.has(originalHash)) return;
-		if (!this.activeApi) return;
-
-		this.resubmittedHashes.add(originalHash);
+	async resubmitOnce(record, hash, trigger) {
 		this.m.tx_resubmit_attempted_total?.inc({ chain: this.chainName });
 
-		this.activeApi.rpc.author.submitExtrinsic(record.raw)
-			.then(hash => {
-				this.m.tx_resubmit_succeeded_total?.inc({ chain: this.chainName });
-				console.log(`[${this.chainName}] auto-resubmitted ${originalHash} for whitelisted signer ${record.signer} -> ${hash.toHex ? hash.toHex() : hash}`);
-			})
-			.catch(err => {
-				this.m.tx_resubmit_failed_total?.inc({ chain: this.chainName });
-				console.log(`[${this.chainName}] auto-resubmit failed for ${originalHash} (whitelisted signer ${record.signer}): ${err.message}`);
-			});
+		try {
+			const resultHash = await this.activeApi.rpc.author.submitExtrinsic(record.raw);
+			this.m.tx_resubmit_succeeded_total?.inc({ chain: this.chainName });
+			console.log(`[${this.chainName}] auto-resubmitted ${hash} for whitelisted signer ${record.signer} (${trigger}) -> ${resultHash.toHex ? resultHash.toHex() : resultHash}`);
+			insertResubmitAttempt({
+				chain: this.chainName, signer: record.signer, nonce: record.nonce,
+				hash, trigger, result: 'succeeded', error: null,
+			}).catch(err => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${err.message}`));
+		} catch (err) {
+			this.m.tx_resubmit_failed_total?.inc({ chain: this.chainName });
+			console.log(`[${this.chainName}] auto-resubmit failed for ${hash} (whitelisted signer ${record.signer}, ${trigger}): ${err.message}`);
+			insertResubmitAttempt({
+				chain: this.chainName, signer: record.signer, nonce: record.nonce,
+				hash, trigger, result: 'failed', error: err.message,
+			}).catch(e => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${e.message}`));
+		}
+	}
+
+	/**
+	 * start (or no-op if already running) a periodic resubmission loop for a
+	 * whitelisted account's transaction, from either trigger (reorg loss, via
+	 * queueReorgReview -- fires immediately, since by that point the loss is
+	 * already settled via onHeightFinalized; or a mempool drop candidate, via
+	 * reviewMissingCandidates -- fires once past the noise threshold). fires
+	 * an immediate first attempt, then retries every RESUBMIT_RETRY_INTERVAL_MS
+	 * until one of:
+	 *  - included: the exact same hash showed up in a block (we never re-sign,
+	 *    so success always means this original hash, not a new one)
+	 *  - nonce invalid: a different hash resolved this (signer,nonce) -- our
+	 *    stale bytes can no longer land, further retries are pointless
+	 *  - era invalid: the mortal era's death block has passed -- same reasoning
+	 *  - safety cap: MAX_RESUBMIT_RETRIES reached, in case none of the above
+	 *    ever resolves (e.g. permanently invalid for an unrelated reason)
+	 */
+	startResubmitRetry(record) {
+		if (!this.resubmitEnabled) return;
+		if (!record.raw || !record.signer) return;
+		if (this.resubmitRetryTimers.has(record.hash)) return; // already retrying this exact hash
+
+		let attempts = 0;
+		const tick = () => {
+			// canonical inclusion only -- record.raw is only ever captured once
+			// signer+nonce are both known (see extrinsic-utils.js), so this lookup
+			// is always valid here. includedHashes can't be used for "succeeded":
+			// a reorg-retry's hash is *already* in there from the losing block it
+			// came from, which would look like an instant false-positive success.
+			const latest = this.latestBySignerNonce.get(this.key(record.signer, record.nonce));
+			if (latest && latest.hash === record.hash) {
+				this.stopResubmitRetry(record.hash); // succeeded -- now canonical
+				return;
+			}
+			if (latest && latest.hash !== record.hash) {
+				this.stopResubmitRetry(record.hash); // nonce consumed by a different hash
+				return;
+			}
+			if (this.isExpired(record)) {
+				this.stopResubmitRetry(record.hash); // era lapsed
+				return;
+			}
+			if (attempts >= this.maxResubmitRetries) {
+				this.stopResubmitRetry(record.hash);
+				return;
+			}
+			if (!this.activeApi) return; // no connection yet -- try again next tick
+
+			attempts++;
+			this.resubmitOnce(record, record.hash, record.lostAtHeight != null ? 'reorg_loss' : 'mempool_drop');
+		};
+
+		tick(); // immediate first attempt, no reason to wait
+		const timer = setInterval(tick, this.resubmitRetryIntervalMs);
+		this.resubmitRetryTimers.set(record.hash, { timer, lostAtHeight: record.lostAtHeight ?? null });
+	}
+
+	stopResubmitRetry(hash) {
+		const entry = this.resubmitRetryTimers.get(hash);
+		if (entry) {
+			clearInterval(entry.timer);
+			this.resubmitRetryTimers.delete(hash);
+		}
 	}
 
 	/**
@@ -396,6 +466,11 @@ export class TxTracker {
 		}
 		for (const height of this.processedForkHeights) {
 			if (height <= belowHeight) this.processedForkHeights.delete(height);
+		}
+		// safety net: a retry loop should always self-stop via its own conditions,
+		// but if a connection never comes back this guarantees it doesn't run forever
+		for (const [hash, entry] of this.resubmitRetryTimers) {
+			if (entry.lostAtHeight <= belowHeight) this.stopResubmitRetry(hash);
 		}
 	}
 

@@ -3,12 +3,19 @@ import { BlockTree } from '../src/monitor/block-tree.js';
 import { createMockMetrics } from './helpers.js';
 
 const insertSubmittedTx = jest.fn(async () => ({}));
-jest.unstable_mockModule('../src/db/queries.js', () => ({ insertSubmittedTx }));
+const insertResubmitAttempt = jest.fn(async () => ({}));
+jest.unstable_mockModule('../src/db/queries.js', () => ({ insertSubmittedTx, insertResubmitAttempt }));
 
 const extractTrackedExtrinsics = jest.fn();
 jest.unstable_mockModule('../src/monitor/extrinsic-utils.js', () => ({ extractTrackedExtrinsics }));
 
 const { TxTracker } = await import('../src/monitor/tx-tracker.js');
+
+// resubmitOnce is fire-and-forget from tick() -- flush pending microtasks
+// (the awaited submitExtrinsic call and its .then chain) before asserting.
+function flushMicrotasks() {
+	return new Promise(resolve => setImmediate(resolve));
+}
 
 function fakeApi(getBlockExtrinsics = () => []) {
 	return {
@@ -277,11 +284,16 @@ describe('TxTracker', () => {
 			return new TxTracker('test-chain', m, {
 				dropGracePolls: 2, dropMaxWaitPolls: 3, reorgGracePeriodBlocks: 2,
 				resubmitEnabled: true, resubmitWhitelist: new Set(['alice']),
+				resubmitRetryIntervalMs: 1000, maxResubmitRetries: 3,
 				...overrides,
 			});
 		}
 
-		test('replays the exact raw bytes for a whitelisted signer once a drop finalizes', async () => {
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		test('does not retry below the drop-noise threshold, then fires immediately once it crosses', async () => {
 			const wtracker = whitelistedTracker();
 			const api = fakeApi();
 			const conn = fakeConn(api);
@@ -289,12 +301,18 @@ describe('TxTracker', () => {
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
 			await wtracker.pollPendingPool(conn); // seen pending
 
-			extractTrackedExtrinsics.mockReturnValue([]); // vanished, never resubmitted by the wallet itself
-			for (let i = 0; i < 4; i++) await wtracker.pollPendingPool(conn);
+			extractTrackedExtrinsics.mockReturnValue([]); // vanished
+			await wtracker.pollPendingPool(conn); // missing count 1, below dropGracePolls(2)
+			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
 
-			expect(m.tx_dropped_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			await wtracker.pollPendingPool(conn); // missing count 2, crosses threshold -> immediate retry
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledWith('0xrawbytes');
 			expect(m.tx_resubmit_attempted_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			expect(insertResubmitAttempt).toHaveBeenCalledWith(expect.objectContaining({
+				signer: 'alice', hash: '0xaaa', trigger: 'mempool_drop', result: 'succeeded',
+			}));
+
+			wtracker.stopResubmitRetry('0xaaa');
 		});
 
 		test('does not resubmit a signer not on the whitelist', async () => {
@@ -326,7 +344,7 @@ describe('TxTracker', () => {
 			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
 		});
 
-		test('resubmits a reorged_lost tx for a whitelisted signer', async () => {
+		test('fires immediately on reorg loss, before the classification grace period elapses', async () => {
 			const wtracker = whitelistedTracker();
 			const api = fakeApi();
 			const tree = new BlockTree('test-chain');
@@ -338,43 +356,105 @@ describe('TxTracker', () => {
 			await wtracker.onNewBlock(api, '0xa1', 100);
 			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
 			await wtracker.onNewBlock(api, '0xa2', 100);
+
+			// classification is still pending (dueAtHeight = 102) at this point,
+			// but the resubmit should already have fired
 			wtracker.onHeightFinalized(100, '0xa1', tree);
+			await flushMicrotasks();
 
-			tree.addBlock('0xb1', 101, '0xa1', null, null, null, 'node-1');
-			extractTrackedExtrinsics.mockReturnValueOnce([]);
-			await wtracker.onNewBlock(api, '0xb1', 101);
-			wtracker.onHeightFinalized(101, '0xb1', tree);
-
-			tree.addBlock('0xc1', 102, '0xb1', null, null, null, 'node-1');
-			extractTrackedExtrinsics.mockReturnValueOnce([]);
-			await wtracker.onNewBlock(api, '0xc1', 102);
-			wtracker.onHeightFinalized(102, '0xc1', tree); // due -- no resubmission ever seen
-
-			expect(m.tx_reorged_lost_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledWith('0xrawbytes');
+			expect(insertResubmitAttempt).toHaveBeenCalledWith(expect.objectContaining({ trigger: 'reorg_loss' }));
+			expect(m.tx_reorged_lost_total.inc).not.toHaveBeenCalled(); // not classified yet
+
+			wtracker.stopResubmitRetry('0xaaa');
 		});
 
-		test('does not resubmit a resolved resubmission or an expired tx', () => {
+		test('stops retrying once the exact same hash gets included', async () => {
+			jest.useFakeTimers();
 			const wtracker = whitelistedTracker();
 			const api = fakeApi();
 			wtracker.activeApi = api;
 
-			wtracker.finalize({ signer: 'alice', nonce: 1, raw: '0xa', kind: 'substrate' }, '0xa', 'expired', {});
-			wtracker.finalize({ signer: 'alice', nonce: 2, raw: '0xb', kind: 'substrate' }, '0xb', 'resubmitted', { replacedBy: '0xc' });
+			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
+			wtracker.startResubmitRetry(record);
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
 
-			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
+			wtracker.latestBySignerNonce.set(wtracker.key('alice', 1), { hash: '0xaaa', blockNumber: 5 }); // succeeded, now canonical
+			await jest.advanceTimersByTimeAsync(1000);
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1); // no further attempts
+
+			await jest.advanceTimersByTimeAsync(5000);
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false);
 		});
 
-		test('only attempts a resubmission once per original hash', () => {
+		test('stops retrying once a different hash resolves the same (signer, nonce)', async () => {
+			jest.useFakeTimers();
 			const wtracker = whitelistedTracker();
 			const api = fakeApi();
 			wtracker.activeApi = api;
-			const record = { signer: 'alice', nonce: 1, raw: '0xa', kind: 'substrate' };
 
-			wtracker.attemptResubmission(record, '0xa');
-			wtracker.attemptResubmission(record, '0xa');
+			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
+			wtracker.startResubmitRetry(record);
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
+
+			// a different hash for the same (signer, nonce) is now canonical
+			wtracker.latestBySignerNonce.set(wtracker.key('alice', 1), { hash: '0xbbb', blockNumber: 5 });
+			await jest.advanceTimersByTimeAsync(5000);
+
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1); // no further attempts
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false);
+		});
+
+		test('stops retrying once the mortal era has expired', async () => {
+			jest.useFakeTimers();
+			const wtracker = whitelistedTracker();
+			const api = fakeApi();
+			wtracker.activeApi = api;
+
+			const record = {
+				signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate',
+				era: { birth: 90, death: 95 },
+			};
+			wtracker.startResubmitRetry(record);
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
+
+			wtracker.lastKnownHeight = 200; // well past death block 95
+			await jest.advanceTimersByTimeAsync(5000);
+
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1); // no further attempts
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false);
+		});
+
+		test('stops after maxResubmitRetries attempts if nothing else resolves it', async () => {
+			jest.useFakeTimers();
+			const wtracker = whitelistedTracker({ maxResubmitRetries: 3, resubmitRetryIntervalMs: 1000 });
+			const api = fakeApi();
+			wtracker.activeApi = api;
+
+			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
+			wtracker.startResubmitRetry(record); // attempt 1 (immediate)
+
+			await jest.advanceTimersByTimeAsync(1000); // attempt 2
+			await jest.advanceTimersByTimeAsync(1000); // attempt 3
+			await jest.advanceTimersByTimeAsync(1000); // over the cap -- should stop without a 4th attempt
+			await jest.advanceTimersByTimeAsync(1000);
+
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(3);
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false);
+		});
+
+		test('does not start a second retry loop for a hash already being retried', async () => {
+			const wtracker = whitelistedTracker();
+			const api = fakeApi();
+			wtracker.activeApi = api;
+
+			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
+			wtracker.startResubmitRetry(record);
+			wtracker.startResubmitRetry(record);
 
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
+			wtracker.stopResubmitRetry('0xaaa');
 		});
 	});
 

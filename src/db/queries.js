@@ -70,7 +70,7 @@ export async function getBlocksAtHeight(chain, height) {
 }
 
 export async function cleanupOldData(retentionDays, forkEventRetentionDays, txRetentionDays) {
-	if (!dbEnabled()) return { blocks: 0, finality: 0, events: 0, txs: 0 };
+	if (!dbEnabled()) return { blocks: 0, finality: 0, events: 0, txs: 0, resubmitAttempts: 0 };
 	const blockResult = await db().query(
 		`DELETE FROM fork_blocks WHERE imported_at < NOW() - INTERVAL '1 day' * $1`,
 		[retentionDays]
@@ -87,11 +87,16 @@ export async function cleanupOldData(retentionDays, forkEventRetentionDays, txRe
 		`DELETE FROM submitted_txs WHERE detected_at < NOW() - INTERVAL '1 day' * $1`,
 		[txRetentionDays]
 	);
+	const resubmitResult = await db().query(
+		`DELETE FROM resubmit_attempts WHERE attempted_at < NOW() - INTERVAL '1 day' * $1`,
+		[txRetentionDays]
+	);
 	return {
 		blocks: blockResult.rowCount,
 		finality: finalityResult.rowCount,
 		events: eventResult.rowCount,
 		txs: txResult.rowCount,
+		resubmitAttempts: resubmitResult.rowCount,
 	};
 }
 
@@ -147,5 +152,39 @@ export async function getSubmittedTxsBySigner(chain, signer, limit = 100) {
 		`SELECT * FROM submitted_txs WHERE chain = $1 AND signer = $2
 		 ORDER BY detected_at DESC LIMIT $3`,
 		[chain, signer, limit]
+	);
+}
+
+export async function insertResubmitAttempt(attempt) {
+	if (!dbEnabled()) return noop;
+	const { chain, signer, nonce, hash, trigger, result, error } = attempt;
+	return db().query(
+		`INSERT INTO resubmit_attempts (chain, signer, nonce, hash, trigger, result, error)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id`,
+		[chain, signer, nonce, hash, trigger, result, error || null]
+	);
+}
+
+export async function getResubmitAttempts(chain, signer, limit = 100) {
+	if (!dbEnabled()) return { rows: [] };
+	const conditions = [];
+	const params = [];
+
+	if (chain) {
+		params.push(chain);
+		conditions.push(`chain = $${params.length}`);
+	}
+	if (signer) {
+		params.push(signer);
+		conditions.push(`signer = $${params.length}`);
+	}
+
+	const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+	params.push(limit);
+
+	return db().query(
+		`SELECT * FROM resubmit_attempts ${where} ORDER BY attempted_at DESC LIMIT $${params.length}`,
+		params
 	);
 }

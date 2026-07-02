@@ -21,6 +21,8 @@ const {
 	insertSubmittedTx,
 	getSubmittedTxs,
 	getSubmittedTxsBySigner,
+	insertResubmitAttempt,
+	getResubmitAttempts,
 } = await import('../src/db/queries.js');
 
 describe('db/queries', () => {
@@ -181,22 +183,23 @@ describe('db/queries', () => {
 	});
 
 	describe('cleanupOldData', () => {
-		test('deletes from all four tables', async () => {
+		test('deletes from all five tables', async () => {
 			mockQuery.mockResolvedValue({ rowCount: 5 });
 
 			const result = await cleanupOldData(90, 365, 180);
 
-			expect(mockQuery).toHaveBeenCalledTimes(4);
+			expect(mockQuery).toHaveBeenCalledTimes(5);
 
 			const tables = mockQuery.mock.calls.map(([sql]) => {
 				if (sql.includes('fork_blocks')) return 'blocks';
 				if (sql.includes('finality_log')) return 'finality';
 				if (sql.includes('fork_events')) return 'events';
+				if (sql.includes('resubmit_attempts')) return 'resubmitAttempts';
 				if (sql.includes('submitted_txs')) return 'txs';
 			});
-			expect(tables.sort()).toEqual(['blocks', 'events', 'finality', 'txs']);
+			expect(tables.sort()).toEqual(['blocks', 'events', 'finality', 'resubmitAttempts', 'txs']);
 
-			expect(result).toEqual({ blocks: 5, finality: 5, events: 5, txs: 5 });
+			expect(result).toEqual({ blocks: 5, finality: 5, events: 5, txs: 5, resubmitAttempts: 5 });
 		});
 
 		test('passes correct retention periods', async () => {
@@ -206,10 +209,12 @@ describe('db/queries', () => {
 			const blockCall = mockQuery.mock.calls.find(([sql]) => sql.includes('fork_blocks'));
 			const eventCall = mockQuery.mock.calls.find(([sql]) => sql.includes('fork_events'));
 			const txCall = mockQuery.mock.calls.find(([sql]) => sql.includes('submitted_txs'));
+			const resubmitCall = mockQuery.mock.calls.find(([sql]) => sql.includes('resubmit_attempts'));
 
 			expect(blockCall[1]).toEqual([30]);
 			expect(eventCall[1]).toEqual([180]);
 			expect(txCall[1]).toEqual([90]);
+			expect(resubmitCall[1]).toEqual([90]);
 		});
 	});
 
@@ -296,6 +301,49 @@ describe('db/queries', () => {
 			const [sql, params] = mockQuery.mock.calls[0];
 			expect(sql).toContain('SELECT * FROM submitted_txs');
 			expect(params).toEqual(['moonbeam', '0xabc', 25]);
+		});
+	});
+
+	describe('insertResubmitAttempt', () => {
+		test('inserts with correct params', async () => {
+			await insertResubmitAttempt({
+				chain: 'hydration', signer: 'alice', nonce: 5, hash: '0xaaa',
+				trigger: 'reorg_loss', result: 'succeeded', error: null,
+			});
+
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('INSERT INTO resubmit_attempts');
+			expect(params).toEqual(['hydration', 'alice', 5, '0xaaa', 'reorg_loss', 'succeeded', null]);
+		});
+
+		test('defaults a missing error to null', async () => {
+			await insertResubmitAttempt({
+				chain: 'hydration', signer: 'alice', nonce: 5, hash: '0xaaa',
+				trigger: 'mempool_drop', result: 'failed',
+			});
+
+			const [, params] = mockQuery.mock.calls[0];
+			expect(params[6]).toBeNull();
+		});
+	});
+
+	describe('getResubmitAttempts', () => {
+		test('queries without filters', async () => {
+			await getResubmitAttempts(null, null, 50);
+
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('ORDER BY attempted_at DESC');
+			expect(sql).not.toContain('WHERE');
+			expect(params).toEqual([50]);
+		});
+
+		test('queries with chain and signer filters', async () => {
+			await getResubmitAttempts('hydration', 'alice', 25);
+
+			const [sql, params] = mockQuery.mock.calls[0];
+			expect(sql).toContain('chain = $1');
+			expect(sql).toContain('signer = $2');
+			expect(params).toEqual(['hydration', 'alice', 25]);
 		});
 	});
 });

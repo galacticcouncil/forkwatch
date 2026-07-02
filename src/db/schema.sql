@@ -87,3 +87,23 @@ CREATE TABLE IF NOT EXISTS submitted_txs (
 CREATE INDEX IF NOT EXISTS idx_submitted_txs_chain_signer ON submitted_txs (chain, signer);
 CREATE INDEX IF NOT EXISTS idx_submitted_txs_status ON submitted_txs (chain, status);
 CREATE INDEX IF NOT EXISTS idx_submitted_txs_detected ON submitted_txs (chain, detected_at);
+
+-- audit log for the whitelisted-account auto-resubmission feature. deliberately
+-- separate from submitted_txs: since resubmission can fire before an incident
+-- is ever classified as dropped/reorged_lost (or fire and succeed, so no
+-- submitted_txs row is ever written at all), this needs to exist independently
+-- of whether the underlying incident produces a row there.
+CREATE TABLE IF NOT EXISTS resubmit_attempts (
+	id            BIGSERIAL PRIMARY KEY,
+	chain         TEXT NOT NULL,
+	signer        TEXT NOT NULL,
+	nonce         BIGINT NOT NULL,
+	hash          TEXT NOT NULL, -- same before and after -- identical bytes are replayed, no new signature
+	trigger       TEXT NOT NULL, -- mempool_drop | reorg_loss
+	result        TEXT NOT NULL, -- succeeded | failed
+	error         TEXT,
+	attempted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_resubmit_attempts_chain_signer ON resubmit_attempts (chain, signer);
+CREATE INDEX IF NOT EXISTS idx_resubmit_attempts_attempted ON resubmit_attempts (chain, attempted_at);

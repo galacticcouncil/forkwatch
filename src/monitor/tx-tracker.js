@@ -38,12 +38,11 @@ export class TxTracker {
 		this.dropMaxWaitPolls = opts.dropMaxWaitPolls ?? DROP_MAX_WAIT_POLLS;
 
 		/**
-		 * auto-resubmission is gated to an explicit address whitelist -- no
-		 * signing ever happens, this only replays the exact bytes we already
-		 * observed being signed once, and only for accounts on this list.
+		 * auto-resubmission replays the exact already-signed bytes for every
+		 * tracked transaction -- no signing ever happens, only replays what we
+		 * captured globally. gated by resubmitEnabled; captures raw from every tx.
 		 */
 		this.resubmitEnabled = !!opts.resubmitEnabled;
-		this.resubmitWhitelist = opts.resubmitWhitelist || new Set();
 		this.resubmitRetryIntervalMs = opts.resubmitRetryIntervalMs ?? RESUBMIT_RETRY_INTERVAL_MS;
 		this.maxResubmitRetries = opts.maxResubmitRetries ?? MAX_RESUBMIT_RETRIES;
 		/** @type {Map<string, {timer: object, lostAtHeight: number|null}>} active periodic retry loops, keyed by hash -- doubles as the idempotency guard (a hash already in here won't be started twice) */
@@ -102,7 +101,7 @@ export class TxTracker {
 			// its cache entry as soon as this awaited call resolves, so this does not
 			// reproduce the api-derive per-block cache leak documented in manager.js.
 			const signedBlock = await api.rpc.chain.getBlock(hash);
-			extrinsics = extractTrackedExtrinsics(signedBlock.block.extrinsics, number, this.resubmitWhitelist);
+			extrinsics = extractTrackedExtrinsics(signedBlock.block.extrinsics, number);
 		} catch (e) {
 			return;
 		}
@@ -158,7 +157,7 @@ export class TxTracker {
 			return;
 		}
 
-		const extracted = extractTrackedExtrinsics(raw, this.lastKnownHeight, this.resubmitWhitelist);
+		const extracted = extractTrackedExtrinsics(raw, this.lastKnownHeight);
 		const currentByHash = new Map(extracted.map(tx => [tx.hash, tx]));
 
 		for (const [hash, prevTx] of this.pendingPool) {
@@ -197,7 +196,7 @@ export class TxTracker {
 			if (cand.missingSincePollCount < this.dropGracePolls) continue;
 
 			// past the noise threshold -- start trying to get it back in ourselves
-			// (whitelisted accounts only; no-ops otherwise). classification below
+			// (all tracked accounts; no-ops when raw is missing). classification below
 			// still runs on its own schedule regardless of whether this succeeds.
 			this.startResubmitRetry(cand);
 
@@ -366,7 +365,7 @@ export class TxTracker {
 	}
 
 	/**
-	 * replay the exact already-signed bytes we captured for a whitelisted
+	 * replay the exact already-signed bytes we captured for any tracked
 	 * account -- no new signature is ever created here, ever. records every
 	 * attempt (success or failure) to resubmit_attempts regardless of whether
 	 * the underlying incident ever gets a submitted_txs row.
@@ -377,14 +376,14 @@ export class TxTracker {
 		try {
 			const resultHash = await this.activeApi.rpc.author.submitExtrinsic(record.raw);
 			this.m.tx_resubmit_succeeded_total?.inc({ chain: this.chainName });
-			console.log(`[${this.chainName}] auto-resubmitted ${hash} for whitelisted signer ${record.signer} (${trigger}) -> ${resultHash.toHex ? resultHash.toHex() : resultHash}`);
+			console.log(`[${this.chainName}] auto-resubmitted ${hash} for signer ${record.signer} (${trigger}) -> ${resultHash.toHex ? resultHash.toHex() : resultHash}`);
 			insertResubmitAttempt({
 				chain: this.chainName, signer: record.signer, nonce: record.nonce,
 				hash, trigger, result: 'succeeded', error: null,
 			}).catch(err => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${err.message}`));
 		} catch (err) {
 			this.m.tx_resubmit_failed_total?.inc({ chain: this.chainName });
-			console.log(`[${this.chainName}] auto-resubmit failed for ${hash} (whitelisted signer ${record.signer}, ${trigger}): ${err.message}`);
+			console.log(`[${this.chainName}] auto-resubmit failed for ${hash} (signer ${record.signer}, ${trigger}): ${err.message}`);
 			insertResubmitAttempt({
 				chain: this.chainName, signer: record.signer, nonce: record.nonce,
 				hash, trigger, result: 'failed', error: err.message,
@@ -393,8 +392,7 @@ export class TxTracker {
 	}
 
 	/**
-	 * start (or no-op if already running) a periodic resubmission loop for a
-	 * whitelisted account's transaction, from either trigger (reorg loss, via
+	 * start (or no-op if already running) a periodic resubmission loop for every
 	 * queueReorgReview -- fires immediately, since by that point the loss is
 	 * already settled via onHeightFinalized; or a mempool drop candidate, via
 	 * reviewMissingCandidates -- fires once past the noise threshold). fires

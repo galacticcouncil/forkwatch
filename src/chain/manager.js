@@ -10,7 +10,7 @@ import { resolveForkEvent } from '../db/queries.js';
 import { db, dbEnabled } from '../db/index.js';
 import {
 	pruneAfter, timeout, txTrackingEnabled, mempoolPollIntervalMs, txReorgGracePeriodBlocks,
-	resubmitEnabled, resubmitWhitelist,
+	resubmitEnabled,
 } from '../config.js';
 
 const RECONNECT_DELAY = 10000; // 10s between reconnect attempts
@@ -35,7 +35,6 @@ export class ChainContext {
 				pollIntervalMs: chainConfig.blockTimeMs || mempoolPollIntervalMs,
 				reorgGracePeriodBlocks: txReorgGracePeriodBlocks,
 				resubmitEnabled,
-				resubmitWhitelist,
 			})
 			: null;
 		/** @type {NodeConnection[]} */

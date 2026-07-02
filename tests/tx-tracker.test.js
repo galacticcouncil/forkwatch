@@ -280,12 +280,11 @@ describe('TxTracker', () => {
 	});
 
 	describe('auto-resubmission', () => {
-		function whitelistedTracker(overrides = {}) {
+		function tracker(opts = {}) {
 			return new TxTracker('test-chain', m, {
 				dropGracePolls: 2, dropMaxWaitPolls: 3, reorgGracePeriodBlocks: 2,
-				resubmitEnabled: true, resubmitWhitelist: new Set(['alice']),
-				resubmitRetryIntervalMs: 1000, maxResubmitRetries: 3,
-				...overrides,
+				resubmitEnabled: true, resubmitRetryIntervalMs: 1000, maxResubmitRetries: 3,
+				...opts,
 			});
 		}
 
@@ -294,7 +293,7 @@ describe('TxTracker', () => {
 		});
 
 		test('does not retry below the drop-noise threshold, then fires immediately once it crosses', async () => {
-			const wtracker = whitelistedTracker();
+			const wtracker = tracker();
 			const api = fakeApi();
 			const conn = fakeConn(api);
 
@@ -315,23 +314,23 @@ describe('TxTracker', () => {
 			wtracker.stopResubmitRetry('0xaaa');
 		});
 
-		test('does not resubmit a signer not on the whitelist', async () => {
-			const wtracker = whitelistedTracker(); // whitelist only has 'alice'
+		test('any tracked tx with raw data gets resubmitted (no whitelist gating)', async () => {
+			const wtracker = tracker(); // no whitelist, every tx with raw is eligible
 			const api = fakeApi();
 			const conn = fakeConn(api);
 
-			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ signer: 'mallory', raw: null })]);
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ signer: 'mallory', raw: '0xrawbytes' })]);
 			await wtracker.pollPendingPool(conn);
 
 			extractTrackedExtrinsics.mockReturnValue([]);
 			for (let i = 0; i < 4; i++) await wtracker.pollPendingPool(conn);
 
-			expect(m.tx_dropped_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
-			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
+			expect(m.tx_resubmit_attempted_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledWith('0xrawbytes');
 		});
 
-		test('does nothing when resubmitEnabled is false, even for a whitelisted signer', async () => {
-			const wtracker = whitelistedTracker({ resubmitEnabled: false });
+		test('does nothing when resubmitEnabled is false', async () => {
+			const wtracker = tracker({ resubmitEnabled: false });
 			const api = fakeApi();
 			const conn = fakeConn(api);
 
@@ -345,7 +344,7 @@ describe('TxTracker', () => {
 		});
 
 		test('fires immediately on reorg loss, before the classification grace period elapses', async () => {
-			const wtracker = whitelistedTracker();
+			const wtracker = tracker();
 			const api = fakeApi();
 			const tree = new BlockTree('test-chain');
 			tree.addBlock('0x99', 99, '0x98', null, null, null, 'node-1');
@@ -371,7 +370,7 @@ describe('TxTracker', () => {
 
 		test('stops retrying once the exact same hash gets included', async () => {
 			jest.useFakeTimers();
-			const wtracker = whitelistedTracker();
+			const wtracker = tracker();
 			const api = fakeApi();
 			wtracker.activeApi = api;
 
@@ -390,7 +389,7 @@ describe('TxTracker', () => {
 
 		test('stops retrying once a different hash resolves the same (signer, nonce)', async () => {
 			jest.useFakeTimers();
-			const wtracker = whitelistedTracker();
+			const wtracker = tracker();
 			const api = fakeApi();
 			wtracker.activeApi = api;
 
@@ -408,7 +407,7 @@ describe('TxTracker', () => {
 
 		test('stops retrying once the mortal era has expired', async () => {
 			jest.useFakeTimers();
-			const wtracker = whitelistedTracker();
+			const wtracker = tracker();
 			const api = fakeApi();
 			wtracker.activeApi = api;
 
@@ -428,7 +427,7 @@ describe('TxTracker', () => {
 
 		test('stops after maxResubmitRetries attempts if nothing else resolves it', async () => {
 			jest.useFakeTimers();
-			const wtracker = whitelistedTracker({ maxResubmitRetries: 3, resubmitRetryIntervalMs: 1000 });
+			const wtracker = tracker({ maxResubmitRetries: 3, resubmitRetryIntervalMs: 1000 });
 			const api = fakeApi();
 			wtracker.activeApi = api;
 
@@ -445,7 +444,7 @@ describe('TxTracker', () => {
 		});
 
 		test('does not start a second retry loop for a hash already being retried', async () => {
-			const wtracker = whitelistedTracker();
+			const wtracker = tracker();
 			const api = fakeApi();
 			wtracker.activeApi = api;
 

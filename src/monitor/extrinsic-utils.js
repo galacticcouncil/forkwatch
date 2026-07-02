@@ -6,26 +6,20 @@ import { LegacyTransaction, AccessListEIP2930Transaction, FeeMarketEIP1559Transa
  * height at which these extrinsics were observed -- era only encodes a
  * phase/period pair, so a reference height is needed to resolve it into
  * absolute birth/death block numbers.
- *
- * whitelist (optional Set<address>) gates capture of the full raw signed
- * extrinsic bytes (ext.toHex()) -- only for signers on this list, so the
- * general population never pays the memory cost of retaining call data we
- * otherwise discard immediately. this is what a resubmission would replay
- * unmodified (no new signature involved).
  */
-export function extractTrackedExtrinsics(extrinsics, refHeight, whitelist = null) {
+export function extractTrackedExtrinsics(extrinsics, refHeight) {
 	const results = [];
 	for (const ext of extrinsics) {
 		if (ext.isSigned) {
-			results.push(extractSubstrateExtrinsic(ext, refHeight, whitelist));
+			results.push(extractSubstrateExtrinsic(ext, refHeight));
 		} else if (ext.method.section === 'ethereum' && ext.method.method === 'transact') {
-			results.push(extractEvmExtrinsic(ext, whitelist));
+			results.push(extractEvmExtrinsic(ext));
 		}
 	}
 	return results;
 }
 
-function extractSubstrateExtrinsic(ext, refHeight, whitelist) {
+function extractSubstrateExtrinsic(ext, refHeight) {
 	let era = null;
 	try {
 		if (ext.era.isMortalEra) {
@@ -46,7 +40,7 @@ function extractSubstrateExtrinsic(ext, refHeight, whitelist) {
 		section: ext.method.section,
 		method: ext.method.method,
 		era,
-		raw: whitelist?.has(signer) ? ext.toHex() : null,
+		raw: ext.toHex(),
 	};
 }
 
@@ -58,7 +52,7 @@ function extractSubstrateExtrinsic(ext, refHeight, whitelist) {
  * baseline if it fails (e.g. an unrecognized TransactionV2 variant after a
  * runtime upgrade). no mortal era exists for ethereum transactions.
  */
-function extractEvmExtrinsic(ext, whitelist) {
+function extractEvmExtrinsic(ext) {
 	const base = {
 		kind: 'evm',
 		signer: null,
@@ -67,7 +61,7 @@ function extractEvmExtrinsic(ext, whitelist) {
 		section: 'ethereum',
 		method: 'transact',
 		era: null,
-		raw: null,
+		raw: ext.toHex(),
 	};
 
 	try {
@@ -79,13 +73,6 @@ function extractEvmExtrinsic(ext, whitelist) {
 		}
 	} catch (e) {
 		// sender recovery is best-effort -- fall back to wrapper-hash-only tracking
-	}
-
-	// whitelist matching (and therefore resubmission) for evm accounts depends
-	// on sender recovery having succeeded above -- without a recovered address
-	// there's nothing to check the whitelist against.
-	if (base.signer && whitelist?.has(base.signer)) {
-		base.raw = ext.toHex();
 	}
 
 	return base;

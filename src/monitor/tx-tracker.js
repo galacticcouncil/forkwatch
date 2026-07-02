@@ -14,6 +14,11 @@ const METRIC_BY_STATUS = {
 	reorged_resubmitted: 'tx_reorged_resubmitted_total',
 };
 
+// auto-resubmission only makes sense for these -- 'expired' means the era
+// already lapsed (replaying the identical bytes would fail immediately), and
+// 'resubmitted'/'reorged_resubmitted' already succeeded via a different hash.
+const AUTO_RESUBMIT_STATUSES = new Set(['dropped', 'reorged_lost']);
+
 /**
  * tracks submitted transactions across two independent event sources feeding
  * one per-(signer,nonce) state machine:
@@ -34,6 +39,18 @@ export class TxTracker {
 		this.reorgGracePeriodBlocks = opts.reorgGracePeriodBlocks ?? 10;
 		this.dropGracePolls = opts.dropGracePolls ?? DROP_GRACE_POLLS;
 		this.dropMaxWaitPolls = opts.dropMaxWaitPolls ?? DROP_MAX_WAIT_POLLS;
+
+		/**
+		 * auto-resubmission is gated to an explicit address whitelist -- no
+		 * signing ever happens, this only replays the exact bytes we already
+		 * observed being signed once, and only for accounts on this list.
+		 */
+		this.resubmitEnabled = !!opts.resubmitEnabled;
+		this.resubmitWhitelist = opts.resubmitWhitelist || new Set();
+		/** @type {Set<string>} original hashes we've already attempted a resubmit for */
+		this.resubmittedHashes = new Set();
+		/** @type {object|null} most recently used live api connection, for submitting resubmissions */
+		this.activeApi = null;
 
 		/** @type {Map<string, {number:number, extrinsics: Array}>} keyed by block hash */
 		this.blockExtrinsics = new Map();
@@ -78,6 +95,7 @@ export class TxTracker {
 	 */
 	async onNewBlock(api, hash, number) {
 		this.lastKnownHeight = Math.max(this.lastKnownHeight, number);
+		this.activeApi = api;
 
 		let extrinsics;
 		try {
@@ -85,7 +103,7 @@ export class TxTracker {
 			// its cache entry as soon as this awaited call resolves, so this does not
 			// reproduce the api-derive per-block cache leak documented in manager.js.
 			const signedBlock = await api.rpc.chain.getBlock(hash);
-			extrinsics = extractTrackedExtrinsics(signedBlock.block.extrinsics, number);
+			extrinsics = extractTrackedExtrinsics(signedBlock.block.extrinsics, number, this.resubmitWhitelist);
 		} catch (e) {
 			return;
 		}
@@ -131,6 +149,8 @@ export class TxTracker {
 	 * until the periodic recheck window passes.
 	 */
 	async pollPendingPool(conn) {
+		this.activeApi = conn.api;
+
 		let raw;
 		try {
 			raw = await conn.api.rpc.author.pendingExtrinsics();
@@ -139,7 +159,7 @@ export class TxTracker {
 			return;
 		}
 
-		const extracted = extractTrackedExtrinsics(raw, this.lastKnownHeight);
+		const extracted = extractTrackedExtrinsics(raw, this.lastKnownHeight, this.resubmitWhitelist);
 		const currentByHash = new Map(extracted.map(tx => [tx.hash, tx]));
 
 		for (const [hash, prevTx] of this.pendingPool) {
@@ -333,6 +353,37 @@ export class TxTracker {
 			resolvedHash: extra.replacedBy ?? null,
 			resolvedHeight: extra.resolvedHeight ?? null,
 		}).catch(err => console.error(`[${this.chainName}] failed to insert submitted_tx: ${err.message}`));
+
+		if (AUTO_RESUBMIT_STATUSES.has(status)) {
+			this.attemptResubmission(record, originalHash);
+		}
+	}
+
+	/**
+	 * replay the exact already-signed bytes we captured for a whitelisted
+	 * account -- no new signature is ever created here. gated on: feature
+	 * enabled, signer on the whitelist, raw bytes actually captured (only
+	 * happens for whitelisted signers to begin with, see extrinsic-utils.js),
+	 * a live connection available, and not already attempted for this hash.
+	 */
+	attemptResubmission(record, originalHash) {
+		if (!this.resubmitEnabled) return;
+		if (!record.raw || !record.signer || !this.resubmitWhitelist.has(record.signer)) return;
+		if (this.resubmittedHashes.has(originalHash)) return;
+		if (!this.activeApi) return;
+
+		this.resubmittedHashes.add(originalHash);
+		this.m.tx_resubmit_attempted_total?.inc({ chain: this.chainName });
+
+		this.activeApi.rpc.author.submitExtrinsic(record.raw)
+			.then(hash => {
+				this.m.tx_resubmit_succeeded_total?.inc({ chain: this.chainName });
+				console.log(`[${this.chainName}] auto-resubmitted ${originalHash} for whitelisted signer ${record.signer} -> ${hash.toHex ? hash.toHex() : hash}`);
+			})
+			.catch(err => {
+				this.m.tx_resubmit_failed_total?.inc({ chain: this.chainName });
+				console.log(`[${this.chainName}] auto-resubmit failed for ${originalHash} (whitelisted signer ${record.signer}): ${err.message}`);
+			});
 	}
 
 	/**

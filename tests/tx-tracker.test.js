@@ -18,6 +18,7 @@ function fakeApi(getBlockExtrinsics = () => []) {
 			},
 			author: {
 				pendingExtrinsics: jest.fn(async () => []),
+				submitExtrinsic: jest.fn(async () => ({ toHex: () => '0xresubmitted' })),
 			},
 		},
 	};
@@ -268,6 +269,112 @@ describe('TxTracker', () => {
 			tracker.onHeightFinalized(102, '0xc1', tree);
 
 			expect(insertSubmittedTx).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('auto-resubmission', () => {
+		function whitelistedTracker(overrides = {}) {
+			return new TxTracker('test-chain', m, {
+				dropGracePolls: 2, dropMaxWaitPolls: 3, reorgGracePeriodBlocks: 2,
+				resubmitEnabled: true, resubmitWhitelist: new Set(['alice']),
+				...overrides,
+			});
+		}
+
+		test('replays the exact raw bytes for a whitelisted signer once a drop finalizes', async () => {
+			const wtracker = whitelistedTracker();
+			const api = fakeApi();
+			const conn = fakeConn(api);
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
+			await wtracker.pollPendingPool(conn); // seen pending
+
+			extractTrackedExtrinsics.mockReturnValue([]); // vanished, never resubmitted by the wallet itself
+			for (let i = 0; i < 4; i++) await wtracker.pollPendingPool(conn);
+
+			expect(m.tx_dropped_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledWith('0xrawbytes');
+			expect(m.tx_resubmit_attempted_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+		});
+
+		test('does not resubmit a signer not on the whitelist', async () => {
+			const wtracker = whitelistedTracker(); // whitelist only has 'alice'
+			const api = fakeApi();
+			const conn = fakeConn(api);
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ signer: 'mallory', raw: null })]);
+			await wtracker.pollPendingPool(conn);
+
+			extractTrackedExtrinsics.mockReturnValue([]);
+			for (let i = 0; i < 4; i++) await wtracker.pollPendingPool(conn);
+
+			expect(m.tx_dropped_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
+		});
+
+		test('does nothing when resubmitEnabled is false, even for a whitelisted signer', async () => {
+			const wtracker = whitelistedTracker({ resubmitEnabled: false });
+			const api = fakeApi();
+			const conn = fakeConn(api);
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
+			await wtracker.pollPendingPool(conn);
+
+			extractTrackedExtrinsics.mockReturnValue([]);
+			for (let i = 0; i < 4; i++) await wtracker.pollPendingPool(conn);
+
+			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
+		});
+
+		test('resubmits a reorged_lost tx for a whitelisted signer', async () => {
+			const wtracker = whitelistedTracker();
+			const api = fakeApi();
+			const tree = new BlockTree('test-chain');
+			tree.addBlock('0x99', 99, '0x98', null, null, null, 'node-1');
+			tree.addBlock('0xa1', 100, '0x99', null, null, null, 'node-1'); // winner
+			tree.addBlock('0xa2', 100, '0x99', null, null, null, 'node-1'); // loser
+
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await wtracker.onNewBlock(api, '0xa1', 100);
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
+			await wtracker.onNewBlock(api, '0xa2', 100);
+			wtracker.onHeightFinalized(100, '0xa1', tree);
+
+			tree.addBlock('0xb1', 101, '0xa1', null, null, null, 'node-1');
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await wtracker.onNewBlock(api, '0xb1', 101);
+			wtracker.onHeightFinalized(101, '0xb1', tree);
+
+			tree.addBlock('0xc1', 102, '0xb1', null, null, null, 'node-1');
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await wtracker.onNewBlock(api, '0xc1', 102);
+			wtracker.onHeightFinalized(102, '0xc1', tree); // due -- no resubmission ever seen
+
+			expect(m.tx_reorged_lost_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledWith('0xrawbytes');
+		});
+
+		test('does not resubmit a resolved resubmission or an expired tx', () => {
+			const wtracker = whitelistedTracker();
+			const api = fakeApi();
+			wtracker.activeApi = api;
+
+			wtracker.finalize({ signer: 'alice', nonce: 1, raw: '0xa', kind: 'substrate' }, '0xa', 'expired', {});
+			wtracker.finalize({ signer: 'alice', nonce: 2, raw: '0xb', kind: 'substrate' }, '0xb', 'resubmitted', { replacedBy: '0xc' });
+
+			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
+		});
+
+		test('only attempts a resubmission once per original hash', () => {
+			const wtracker = whitelistedTracker();
+			const api = fakeApi();
+			wtracker.activeApi = api;
+			const record = { signer: 'alice', nonce: 1, raw: '0xa', kind: 'substrate' };
+
+			wtracker.attemptResubmission(record, '0xa');
+			wtracker.attemptResubmission(record, '0xa');
+
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
 		});
 	});
 

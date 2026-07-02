@@ -8,7 +8,10 @@ import { SlotTracker } from '../monitor/slot-tracker.js';
 import { TxTracker } from '../monitor/tx-tracker.js';
 import { resolveForkEvent } from '../db/queries.js';
 import { db, dbEnabled } from '../db/index.js';
-import { pruneAfter, timeout, txTrackingEnabled, mempoolPollIntervalMs, txReorgGracePeriodBlocks } from '../config.js';
+import {
+	pruneAfter, timeout, txTrackingEnabled, mempoolPollIntervalMs, txReorgGracePeriodBlocks,
+	resubmitEnabled, resubmitWhitelist,
+} from '../config.js';
 
 const RECONNECT_DELAY = 10000; // 10s between reconnect attempts
 
@@ -31,6 +34,8 @@ export class ChainContext {
 			? new TxTracker(this.name, m, {
 				pollIntervalMs: chainConfig.blockTimeMs || mempoolPollIntervalMs,
 				reorgGracePeriodBlocks: txReorgGracePeriodBlocks,
+				resubmitEnabled,
+				resubmitWhitelist,
 			})
 			: null;
 		/** @type {NodeConnection[]} */

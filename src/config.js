@@ -14,6 +14,13 @@ export const mempoolPollIntervalMs = Number(process.env.TX_MEMPOOL_POLL_INTERVAL
 export const txReorgGracePeriodBlocks = Number(process.env.TX_REORG_GRACE_PERIOD_BLOCKS) || 10;
 export const txRetentionDays = Number(process.env.TX_RETENTION_DAYS) || 180;
 
+// auto-resubmission: replays the exact already-signed bytes for dropped/reorged-lost
+// txs from an explicit address whitelist ONLY -- no signing ever happens, off by default.
+export const resubmitEnabled = process.env.RESUBMIT_ENABLED === 'true';
+export const resubmitWhitelist = new Set(
+	process.env.RESUBMIT_WHITELIST ? JSON.parse(process.env.RESUBMIT_WHITELIST) : []
+);
+
 const presets = {
 	hydration: [
 		{

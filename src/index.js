@@ -109,6 +109,21 @@ const m = metrics.register('forkwatch', {
 		help: 'total trackable extrinsics observed (mempool or block)',
 		labels: ['chain'],
 	},
+	tx_resubmit_attempted_total: {
+		type: 'counter',
+		help: 'auto-resubmission attempts for whitelisted accounts (dropped/reorged_lost only)',
+		labels: ['chain'],
+	},
+	tx_resubmit_succeeded_total: {
+		type: 'counter',
+		help: 'auto-resubmissions accepted back into the pool',
+		labels: ['chain'],
+	},
+	tx_resubmit_failed_total: {
+		type: 'counter',
+		help: 'auto-resubmissions rejected by the pool',
+		labels: ['chain'],
+	},
 });
 
 let chainManager;

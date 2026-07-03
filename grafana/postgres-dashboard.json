@@ -195,7 +195,7 @@
     },
     {
       "title": "recent resubmission attempts",
-      "description": "auto-resubmission attempts for whitelisted accounts (RESUBMIT_ENABLED), from resubmit_attempts",
+      "description": "auto-resubmission attempts (RESUBMIT_ENABLED), from resubmit_attempts. 'pool-accepted' means a node's pool acknowledged the call, NOT that it survived to inclusion -- only 'confirmed included' means the resubmission actually rescued something.",
       "type": "table",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 54 },
       "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
@@ -212,7 +212,7 @@
               {
                 "id": "mappings",
                 "value": [
-                  { "type": "value", "options": { "succeeded": { "color": "green", "text": "succeeded" }, "failed": { "color": "red", "text": "failed" } } }
+                  { "type": "value", "options": { "confirmed": { "color": "green", "text": "confirmed included" }, "succeeded": { "color": "yellow", "text": "pool-accepted" }, "failed": { "color": "red", "text": "failed" } } }
                 ]
               }
             ]

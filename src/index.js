@@ -114,17 +114,22 @@ const m = metrics.register('forkwatch', {
 	},
 	tx_resubmit_attempted_total: {
 		type: 'counter',
-		help: 'auto-resubmission attempts for whitelisted accounts (dropped/reorged_lost only)',
+		help: 'auto-resubmission attempts (replaying already-signed bytes) for any tracked transaction',
 		labels: ['chain'],
 	},
 	tx_resubmit_succeeded_total: {
 		type: 'counter',
-		help: 'auto-resubmissions accepted back into the pool',
+		help: 'auto-resubmissions where at least one node accepted the call -- NOT a guarantee of inclusion, see tx_resubmit_confirmed_total',
 		labels: ['chain'],
 	},
 	tx_resubmit_failed_total: {
 		type: 'counter',
-		help: 'auto-resubmissions rejected by the pool',
+		help: 'auto-resubmissions rejected by every connected node',
+		labels: ['chain'],
+	},
+	tx_resubmit_confirmed_total: {
+		type: 'counter',
+		help: 'auto-resubmissions where the exact resubmitted hash was later confirmed canonically included -- the actual rescue signal',
 		labels: ['chain'],
 	},
 });

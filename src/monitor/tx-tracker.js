@@ -414,15 +414,35 @@ export class TxTracker {
 	}
 
 	/**
+	 * a resubmitted hash actually became canonical -- the one outcome that
+	 * matters ("did this rescue anything") but which resubmitOnce's own
+	 * "succeeded" can't tell us (that's just "a pool accepted the call",
+	 * observed in production to often NOT survive to inclusion). recorded
+	 * into the same resubmit_attempts audit trail with its own result value
+	 * so it's distinguishable from a mere pool-accept.
+	 */
+	recordConfirmedInclusion(record) {
+		this.m.tx_resubmit_confirmed_total?.inc({ chain: this.chainName });
+		console.log(`[${this.chainName}] resubmission of ${record.hash} for signer ${record.signer} is now canonically included`);
+		insertResubmitAttempt({
+			chain: this.chainName, signer: record.signer, nonce: record.nonce,
+			hash: record.hash, trigger: record.trigger || 'mempool_drop', result: 'confirmed', error: null,
+		}).catch(err => console.error(`[${this.chainName}] failed to insert resubmit_attempt: ${err.message}`));
+	}
+
+	/**
 	 * replay the exact already-signed bytes we captured for any tracked
 	 * account -- no new signature is ever created here, ever. fans out to
 	 * EVERY currently-connected node for the chain, not just one: a node that
 	 * already has (or recently had) this exact hash will reject it as
 	 * "already imported" even though the transaction is genuinely missing
 	 * from the network's canonical view, so a single-node attempt tells us
-	 * little. counts as succeeded if any node accepts it. records one
-	 * aggregate row per attempt to resubmit_attempts regardless of whether
-	 * the underlying incident ever gets a submitted_txs row.
+	 * little. counts as succeeded if any node accepts it -- NOTE: this only
+	 * means the pool acknowledged the call, not that it survives to
+	 * inclusion (see recordConfirmedInclusion for the signal that actually
+	 * matters). records one aggregate row per attempt to resubmit_attempts
+	 * regardless of whether the underlying incident ever gets a
+	 * submitted_txs row.
 	 */
 	async resubmitOnce(record, hash, trigger) {
 		const connections = (this.getConnections?.() || []).filter(c => c.connected);
@@ -493,7 +513,14 @@ export class TxTracker {
 			// came from, which would look like an instant false-positive success.
 			const latest = this.latestBySignerNonce.get(this.key(record.signer, record.nonce));
 			if (latest && latest.hash === record.hash) {
-				this.stopResubmitRetry(record.hash); // succeeded -- now canonical
+				// confirmed: the exact hash we've been replaying is now canonical.
+				// distinct from resubmitOnce's "succeeded" (a pool merely accepted
+				// the call, which we've directly observed does NOT mean it stuck --
+				// only attribute this if we actually attempted at least once first,
+				// so "it happened to resolve before we ever intervened" isn't
+				// misreported as a rescue).
+				if (attempts > 0) this.recordConfirmedInclusion(record);
+				this.stopResubmitRetry(record.hash);
 				return;
 			}
 			if (latest && latest.hash !== record.hash) {

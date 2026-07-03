@@ -29,6 +29,7 @@ export function createMockMetrics() {
 		tx_resubmit_attempted_total: metric(),
 		tx_resubmit_succeeded_total: metric(),
 		tx_resubmit_failed_total: metric(),
+		tx_resubmit_confirmed_total: metric(),
 	};
 }
 

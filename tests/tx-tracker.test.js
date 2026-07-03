@@ -449,6 +449,29 @@ describe('TxTracker', () => {
 			await jest.advanceTimersByTimeAsync(5000);
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
 			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false);
+
+			// the actual rescue signal -- distinct from resubmitOnce's "succeeded"
+			// (pool-accepted, observed in production to often NOT survive to
+			// inclusion) -- only fires once we've actually attempted a resubmit
+			expect(m.tx_resubmit_confirmed_total.inc).toHaveBeenCalledWith({ chain: 'test-chain' });
+			expect(insertResubmitAttempt).toHaveBeenCalledWith(expect.objectContaining({
+				hash: '0xaaa', result: 'confirmed',
+			}));
+		});
+
+		test('does not record a confirmed inclusion if it resolved before any attempt was made', async () => {
+			jest.useFakeTimers();
+			const wtracker = tracker();
+			const api = fakeApi();
+			wtracker.getConnections = () => [fakeConn(api)];
+
+			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
+			// already canonical before startResubmitRetry's own immediate tick runs
+			wtracker.latestBySignerNonce.set(wtracker.key('alice', 1), { hash: '0xaaa', blockNumber: 5 });
+			wtracker.startResubmitRetry(record);
+
+			expect(api.rpc.author.submitExtrinsic).not.toHaveBeenCalled();
+			expect(m.tx_resubmit_confirmed_total.inc).not.toHaveBeenCalled();
 		});
 
 		test('stops retrying once a different hash resolves the same (signer, nonce)', async () => {

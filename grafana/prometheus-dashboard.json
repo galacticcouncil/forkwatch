@@ -292,7 +292,7 @@
     },
     {
       "title": "resubmission attempts",
-      "description": "auto-resubmission attempts for whitelisted accounts, per chain (RESUBMIT_ENABLED)",
+      "description": "auto-resubmission attempts (RESUBMIT_ENABLED) for any tracked transaction, per chain",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 54 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
@@ -313,7 +313,7 @@
     },
     {
       "title": "resubmission outcomes",
-      "description": "succeeded vs failed auto-resubmissions per chain",
+      "description": "pool-accepted vs rejected vs CONFIRMED (canonically included) auto-resubmissions per chain -- pool-accepted does not imply confirmed, see the confirmed series specifically for whether anything was actually rescued",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 54 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
@@ -324,33 +324,42 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byRegexp", "options": ".*succeeded.*" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+            "matcher": { "id": "byRegexp", "options": ".*pool-accepted.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
           },
           {
             "matcher": { "id": "byRegexp", "options": ".*failed.*" },
             "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*confirmed.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
           }
         ]
       },
       "targets": [
         {
           "expr": "increase(forkwatch_tx_resubmit_succeeded_total[$__rate_interval])",
-          "legendFormat": "{{chain}} succeeded",
+          "legendFormat": "{{chain}} pool-accepted",
           "refId": "A"
         },
         {
           "expr": "increase(forkwatch_tx_resubmit_failed_total[$__rate_interval])",
           "legendFormat": "{{chain}} failed",
           "refId": "B"
+        },
+        {
+          "expr": "increase(forkwatch_tx_resubmit_confirmed_total[$__rate_interval])",
+          "legendFormat": "{{chain}} confirmed included",
+          "refId": "C"
         }
       ]
     },
     {
-      "title": "resubmission success rate",
-      "description": "share of auto-resubmission attempts accepted back into the pool (selected time range)",
+      "title": "resubmission pool-accept rate (NOT a rescue rate)",
+      "description": "share of auto-resubmission attempts a node's pool accepted (selected time range) -- this does NOT mean the transaction survived to inclusion. traced examples show pool-accepted resubmissions frequently get evicted again anyway. see the confirmed-inclusion-rate panel for the metric that actually indicates a rescue.",
       "type": "stat",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 62 },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 62 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
@@ -375,6 +384,40 @@
       "targets": [
         {
           "expr": "sum by (chain) (increase(forkwatch_tx_resubmit_succeeded_total[$__range])) / sum by (chain) (increase(forkwatch_tx_resubmit_attempted_total[$__range]))",
+          "legendFormat": "{{chain}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "resubmission confirmed-inclusion rate (the real rescue rate)",
+      "description": "share of auto-resubmission attempts where the exact resubmitted hash was later confirmed canonically included -- this is the metric that actually answers 'did this rescue anything'",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 62 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.05 },
+              { "color": "green", "value": 0.3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (chain) (increase(forkwatch_tx_resubmit_confirmed_total[$__range])) / sum by (chain) (increase(forkwatch_tx_resubmit_attempted_total[$__range]))",
           "legendFormat": "{{chain}}",
           "refId": "A"
         }

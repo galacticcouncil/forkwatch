@@ -10,10 +10,15 @@ import { LegacyTransaction, AccessListEIP2930Transaction, FeeMarketEIP1559Transa
 export function extractTrackedExtrinsics(extrinsics, refHeight) {
 	const results = [];
 	for (const ext of extrinsics) {
-		if (ext.isSigned) {
-			results.push(extractSubstrateExtrinsic(ext, refHeight));
-		} else if (ext.method.section === 'ethereum' && ext.method.method === 'transact') {
-			results.push(extractEvmExtrinsic(ext));
+		try {
+			if (ext.isSigned) {
+				results.push(extractSubstrateExtrinsic(ext, refHeight));
+			} else if (ext.method.section === 'ethereum' && ext.method.method === 'transact') {
+				results.push(extractEvmExtrinsic(ext));
+			}
+		} catch (e) {
+			// one malformed/unexpected extrinsic must not cost us the rest of
+			// this block's or pending-pool snapshot's extraction
 		}
 	}
 	return results;
@@ -91,6 +96,14 @@ function actionTo(action) {
 	return action.isCall ? action.asCall.toHex() : undefined;
 }
 
+// r/s signature components decode as H256 (a fixed-length hash type, exposing
+// only toHex()/toU8a()), NOT a numeric codec type -- .toBigInt() only exists on
+// AbstractInt-derived types (U256, u64, Compact, ...) and throws unconditionally
+// on H256. this converts via the hex representation instead.
+function hashToBigInt(h256) {
+	return BigInt(h256.toHex());
+}
+
 function buildEthereumJsTx(txV2) {
 	if (txV2.isLegacy) {
 		const t = txV2.asLegacy;
@@ -102,8 +115,8 @@ function buildEthereumJsTx(txV2) {
 			value: t.value.toBigInt(),
 			data: t.input.toHex(),
 			v: t.signature.v.toBigInt(),
-			r: t.signature.r.toBigInt(),
-			s: t.signature.s.toBigInt(),
+			r: hashToBigInt(t.signature.r),
+			s: hashToBigInt(t.signature.s),
 		});
 		return { tx, nonce: Number(t.nonce.toBigInt()) };
 	}
@@ -120,8 +133,8 @@ function buildEthereumJsTx(txV2) {
 			data: t.input.toHex(),
 			accessList: t.accessList.map(a => [a.address.toHex(), a.storageKeys.map(k => k.toHex())]),
 			v: t.oddYParity.isTrue ? 1n : 0n,
-			r: t.r.toBigInt(),
-			s: t.s.toBigInt(),
+			r: hashToBigInt(t.r),
+			s: hashToBigInt(t.s),
 		});
 		return { tx, nonce: Number(t.nonce.toBigInt()) };
 	}
@@ -139,8 +152,8 @@ function buildEthereumJsTx(txV2) {
 			data: t.input.toHex(),
 			accessList: t.accessList.map(a => [a.address.toHex(), a.storageKeys.map(k => k.toHex())]),
 			v: t.oddYParity.isTrue ? 1n : 0n,
-			r: t.r.toBigInt(),
-			s: t.s.toBigInt(),
+			r: hashToBigInt(t.r),
+			s: hashToBigInt(t.s),
 		});
 		return { tx, nonce: Number(t.nonce.toBigInt()) };
 	}

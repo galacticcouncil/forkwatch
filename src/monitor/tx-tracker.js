@@ -47,8 +47,20 @@ export class TxTracker {
 		this.resubmitEnabled = !!opts.resubmitEnabled;
 		this.resubmitRetryIntervalMs = opts.resubmitRetryIntervalMs ?? RESUBMIT_RETRY_INTERVAL_MS;
 		this.maxResubmitRetries = opts.maxResubmitRetries ?? MAX_RESUBMIT_RETRIES;
-		/** @type {Map<string, {timer: object, lostAtHeight: number|null}>} active periodic retry loops, keyed by hash -- doubles as the idempotency guard (a hash already in here won't be started twice) */
+		/** @type {Map<string, {timer: object, lostAtHeight: number|null}>} active periodic retry loops, keyed by hash */
 		this.resubmitRetryTimers = new Map();
+		/**
+		 * @type {Set<string>} every hash that has ever been given a retry loop,
+		 * permanently -- unlike resubmitRetryTimers (cleared once a loop stops),
+		 * this never forgets. a transaction landing in losing blocks at more than
+		 * one nearby height (a real, documented occurrence -- see the dashboard's
+		 * "fork combos: consecutive forked heights") can cause queueReorgReview to
+		 * discover the same hash again after its first retry loop already
+		 * self-stopped; without this, that looks like a fresh drop and restarts
+		 * a new loop, producing far more frequent attempts than
+		 * RESUBMIT_RETRY_INTERVAL_MS implies. one retry lifecycle per hash, ever.
+		 */
+		this.everRetried = new Set();
 		/** @type {(() => Array)|null} returns current NodeConnections for the chain, set by start() -- resubmissions fan out to every connected one, since any single node may already have (or be missing) a given hash */
 		this.getConnections = null;
 
@@ -189,7 +201,7 @@ export class TxTracker {
 			if (!currentByHash.has(hash)) this.pendingPool.delete(hash);
 		}
 
-		this.reviewMissingCandidates();
+		this.reviewMissingCandidates(currentByHash);
 	}
 
 	onTxLeftPool(hash, tx) {
@@ -200,15 +212,33 @@ export class TxTracker {
 			existing.reappearedStreak = 0; // flickered again -- cancel the pending "recovered" call, keep its missingSincePollCount clock running
 			return;
 		}
-		this.missingCandidates.set(hash, { ...tx, missingSincePollCount: 0, reappearedStreak: 0 });
+		// lostAtHeight anchors the pruneBlocks safety-net check (see startResubmitRetry/
+		// pruneBlocks) -- without a real height here it defaults to null, which
+		// coerces to 0 in that comparison and stops the retry loop almost
+		// immediately (within one finalized-heads event) instead of giving it its
+		// intended ~pruneAfter-block window.
+		this.missingCandidates.set(hash, {
+			...tx, missingSincePollCount: 0, reappearedStreak: 0,
+			lostAtHeight: this.lastKnownHeight, trigger: 'mempool_drop',
+		});
 	}
 
-	reviewMissingCandidates() {
+	reviewMissingCandidates(currentByHash) {
 		for (const [hash, cand] of this.missingCandidates) {
 			if (this.includedHashes.has(hash)) {
 				this.missingCandidates.delete(hash);
 				continue;
 			}
+
+			// present again this poll, just not yet past the reappear debounce --
+			// don't advance the missing-since clock while it's actually sitting
+			// right there. without this, a transaction that's genuinely alive but
+			// flickering in and out of this one node's view (e.g. priority/weight
+			// eviction and re-entry, exactly what the "already imported"/"already
+			// banned" pool errors we see on resubmission attempts would produce)
+			// reaches dropGracePolls/dropMaxWaitPolls exactly as fast as one that's
+			// truly and continuously gone -- a direct false-positive-drop mechanism.
+			if (currentByHash?.has(hash)) continue;
 
 			cand.missingSincePollCount++;
 			if (cand.missingSincePollCount < this.dropGracePolls) continue;
@@ -302,6 +332,7 @@ export class TxTracker {
 					lostAtHeight: height,
 					lostAtHash: hash,
 					dueAtHeight: height + this.reorgGracePeriodBlocks,
+					trigger: 'reorg_loss',
 				};
 				this.pendingReorgReview.push(entry);
 				// the loss is already settled (this runs from onHeightFinalized, so
@@ -449,6 +480,9 @@ export class TxTracker {
 		if (!this.resubmitEnabled) return;
 		if (!record.raw || !record.signer) return;
 		if (this.resubmitRetryTimers.has(record.hash)) return; // already retrying this exact hash
+		if (this.everRetried.has(record.hash)) return; // already had a full retry lifecycle -- don't start another
+		if (this.everRetried.size >= MAX_FINALIZED_HASHES) this.everRetried.clear();
+		this.everRetried.add(record.hash);
 
 		let attempts = 0;
 		const tick = () => {
@@ -477,7 +511,7 @@ export class TxTracker {
 			if (!this.getConnections?.().some(c => c.connected)) return; // no connection yet -- try again next tick
 
 			attempts++;
-			this.resubmitOnce(record, record.hash, record.lostAtHeight != null ? 'reorg_loss' : 'mempool_drop');
+			this.resubmitOnce(record, record.hash, record.trigger || 'mempool_drop');
 		};
 
 		tick(); // immediate first attempt, no reason to wait

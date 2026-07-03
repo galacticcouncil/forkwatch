@@ -202,6 +202,29 @@ describe('TxTracker', () => {
 			// only one retry loop ever started for this hash -- not restarted by the flicker
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
 		});
+
+		test('does not advance missingSincePollCount on a poll where the candidate is present', async () => {
+			// a transaction that is genuinely alive but flickering in and out of
+			// this one node's view must not reach the drop threshold at the same
+			// rate as one that is truly and continuously gone -- otherwise pool
+			// flicker (exactly what "already imported"/"temporarily banned"
+			// rejections on resubmission suggest is happening) produces false
+			// positive drop/expired classifications.
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
+			await tracker.pollPendingPool(fakeConn(fakeApi())); // seen pending
+
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await tracker.pollPendingPool(fakeConn(fakeApi())); // missing -- count goes to 1
+			expect(tracker.missingCandidates.get('0xaaa').missingSincePollCount).toBe(1);
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx()]);
+			await tracker.pollPendingPool(fakeConn(fakeApi())); // present again (not yet debounced-clear)
+			expect(tracker.missingCandidates.get('0xaaa').missingSincePollCount).toBe(1); // unchanged, not 2
+
+			extractTrackedExtrinsics.mockReturnValueOnce([]);
+			await tracker.pollPendingPool(fakeConn(fakeApi())); // missing again
+			expect(tracker.missingCandidates.get('0xaaa').missingSincePollCount).toBe(2); // resumes from 1, not 0
+		});
 	});
 
 	describe('reorg-loss detection', () => {
@@ -496,6 +519,26 @@ describe('TxTracker', () => {
 			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
 			wtracker.stopResubmitRetry('0xaaa');
 		});
+
+		test('does not start a fresh retry loop for a hash whose loop already stopped', async () => {
+			// simulates a transaction landing in losing blocks at more than one
+			// nearby height during a cascading reorg -- queueReorgReview can
+			// legitimately call startResubmitRetry for the same hash a second
+			// time, after the first retry lifecycle already completed.
+			const wtracker = tracker();
+			const api = fakeApi();
+			wtracker.getConnections = () => [fakeConn(api)];
+
+			const record = { signer: 'alice', nonce: 1, hash: '0xaaa', raw: '0xrawbytes', kind: 'substrate', era: null };
+			wtracker.startResubmitRetry(record);
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1);
+
+			wtracker.stopResubmitRetry('0xaaa'); // loop lifecycle ends (e.g. hit its stop condition)
+			wtracker.startResubmitRetry(record); // discovered again from a different height
+
+			expect(api.rpc.author.submitExtrinsic).toHaveBeenCalledTimes(1); // no second attempt
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false); // and no loop was restarted
+		});
 	});
 
 	describe('pruneBlocks', () => {
@@ -511,6 +554,35 @@ describe('TxTracker', () => {
 			expect(tracker.blockExtrinsics.has('0xaa')).toBe(false);
 			expect(tracker.processedForkHeights.has(50)).toBe(false);
 			expect(tracker.processedForkHeights.has(150)).toBe(true);
+		});
+
+		test('does not kill a mempool-drop retry loop immediately (lostAtHeight must be a real height, not null)', async () => {
+			// regression: mempool-drop candidates used to have no lostAtHeight at
+			// all, so startResubmitRetry stored `null`, and pruneBlocks's safety
+			// check `entry.lostAtHeight <= belowHeight` coerced null to 0 -- true
+			// for almost any belowHeight, killing the retry loop within one
+			// finalized-heads event instead of giving it its intended window.
+			const wtracker = new TxTracker('test-chain', m, {
+				dropGracePolls: 2, dropMaxWaitPolls: 20, resubmitEnabled: true,
+			});
+			const api = fakeApi();
+			const conn = fakeConn(api);
+			wtracker.getConnections = () => [conn];
+			wtracker.lastKnownHeight = 1000;
+
+			extractTrackedExtrinsics.mockReturnValueOnce([substrateTx({ raw: '0xrawbytes' })]);
+			await wtracker.pollPendingPool(conn);
+			extractTrackedExtrinsics.mockReturnValue([]);
+			await wtracker.pollPendingPool(conn);
+			await wtracker.pollPendingPool(conn); // crosses dropGracePolls, retry starts at height 1000
+
+			expect(wtracker.resubmitRetryTimers.get('0xaaa').lostAtHeight).toBe(1000);
+
+			wtracker.pruneBlocks(990); // well below 1000 -- should NOT stop the loop
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(true);
+
+			wtracker.pruneBlocks(1000); // now at/past it -- should stop it
+			expect(wtracker.resubmitRetryTimers.has('0xaaa')).toBe(false);
 		});
 	});
 
